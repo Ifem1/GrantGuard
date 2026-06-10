@@ -20,6 +20,7 @@ import { riskAdjustedScore } from "./scoring";
 
 const CONTRACT_ADDRESS = (process.env.NEXT_PUBLIC_GRANTGUARD_CONTRACT ?? "").trim();
 const CHAIN_NAME = (process.env.NEXT_PUBLIC_GENLAYER_CHAIN ?? "localnet").trim();
+const RPC_ENDPOINT = (process.env.NEXT_PUBLIC_GENLAYER_RPC ?? "https://studio.genlayer.com/api").trim();
 export const usingMock = !CONTRACT_ADDRESS;
 export const contractAddress = CONTRACT_ADDRESS;
 
@@ -50,7 +51,7 @@ async function getClient(): Promise<any> {
     _account = sdk.createAccount(pk);
   }
 
-  _client = sdk.createClient({ chain, account: _account });
+  _client = sdk.createClient({ chain, account: _account, endpoint: RPC_ENDPOINT });
   return _client;
 }
 
