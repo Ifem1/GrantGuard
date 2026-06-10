@@ -108,18 +108,47 @@ export async function getRound(id: string): Promise<GrantRound | undefined> {
   return rounds.find((r) => r.round_id === id);
 }
 
-export async function createRound(round: GrantRound): Promise<void> {
+export async function createRound(round: GrantRound): Promise<{ txHash?: string }> {
   const client = await getClient();
+  let txHash: string | undefined;
   if (client) {
     const { round_id, ...payload } = round;
-    await client.writeContract({
+    const result = await client.writeContract({
       address: CONTRACT_ADDRESS,
       functionName: "create_round",
       args: [round_id, JSON.stringify(payload)],
       value: 0n,
     });
+    txHash = typeof result === "string" ? result : result?.hash ?? result?.transactionHash;
+    if (txHash) {
+      try {
+        const receipt: any = await client.waitForTransactionReceipt({
+          hash: txHash,
+          retries: 60,
+          interval: 2000,
+        });
+        const consensus = receipt?.consensus_data ?? receipt?.consensusData ?? {};
+        const txResult =
+          receipt?.tx_data_decoded?.result ??
+          consensus?.leader_receipt?.[0]?.execution_result ??
+          receipt?.result ??
+          receipt?.executionResult;
+        const ok = String(txResult ?? "").toUpperCase() === "SUCCESS";
+        if (!ok) {
+          const stderr =
+            consensus?.leader_receipt?.[0]?.error ??
+            consensus?.leader_receipt?.[0]?.stderr ??
+            receipt?.error ??
+            "Contract execution failed";
+          throw new Error(typeof stderr === "string" ? stderr : JSON.stringify(stderr));
+        }
+      } catch (e: any) {
+        throw new Error(e?.message ?? `On-chain execution failed (tx ${txHash})`);
+      }
+    }
   }
   rounds = [round, ...rounds];
+  return { txHash };
 }
 
 // ---------- Proposals ----------

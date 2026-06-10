@@ -21,7 +21,13 @@ export default function RoundDetail({ params }: { params: Promise<{ roundId: str
 
   useEffect(() => {
     (async () => {
-      const r = await getRound(roundId);
+      // Retry briefly — fresh create_round txs may not be queryable in the first
+      // moment after writeContract resolves.
+      let r = await getRound(roundId);
+      for (let i = 0; !r && i < 5; i++) {
+        await new Promise((res) => setTimeout(res, 1500));
+        r = await getRound(roundId);
+      }
       setRound(r ?? null);
       if (r) {
         const ps = await getProposals(roundId);
