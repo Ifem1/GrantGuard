@@ -28,6 +28,13 @@ h1, h2, h3, h4, .font-display {
   background: linear-gradient(180deg, rgba(244,237,225,0.04), rgba(244,237,225,0.02));
   border: 1px solid rgba(90,71,50,0.45);
   border-radius: 6px;
+  transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.panel:hover {
+  transform: translateY(-2px);
+  border-color: rgba(199,154,59,0.55);
+  box-shadow: 0 10px 24px -16px rgba(199,154,59,0.35);
 }
 
 .panel-ivory {
@@ -58,3 +65,22 @@ h1, h2, h3, h4, .font-display {
 button, a { transition: all 0.15s ease; }
 
 ::selection { background: #C79A3B; color: #11100E; }
+
+@keyframes ggFadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.fade-up {
+  animation: ggFadeUp 0.6s ease-out both;
+}
+
+@keyframes ggPulseRing {
+  0%   { box-shadow: 0 0 0 0 rgba(199,154,59,0.45); }
+  70%  { box-shadow: 0 0 0 8px rgba(199,154,59,0); }
+  100% { box-shadow: 0 0 0 0 rgba(199,154,59,0); }
+}
+
+.pulse-ring {
+  animation: ggPulseRing 2.4s ease-out infinite;
+}

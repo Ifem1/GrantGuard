@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ParticleField } from "@/components/ParticleField";
 
 export default function LandingPage() {
   return (
@@ -6,9 +7,10 @@ export default function LandingPage() {
       {/* Hero */}
       <section className="relative overflow-hidden border-b hairline border-b-bronze/40">
         <div className="absolute inset-0 grid-bg opacity-50" />
+        <div className="absolute inset-0"><ParticleField /></div>
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-ink" />
         <div className="relative max-w-7xl mx-auto px-6 pt-24 pb-32 grid grid-cols-12 gap-8">
-          <div className="col-span-12 lg:col-span-7">
+          <div className="col-span-12 lg:col-span-7 fade-up">
             <div className="label-eyebrow mb-6">GenLayer Studionet · Intelligent Contracts</div>
             <h1 className="font-display text-6xl md:text-7xl leading-[1.02] text-softwhite mb-6">
               The intelligence layer for ecosystem grants.
@@ -39,7 +41,7 @@ export default function LandingPage() {
               </Link>
             </div>
           </div>
-          <div className="col-span-12 lg:col-span-5">
+          <div className="col-span-12 lg:col-span-5 fade-up" style={{ animationDelay: "0.15s" }}>
             <DossierPreview />
           </div>
         </div>
