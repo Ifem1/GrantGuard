@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { WalletConnectButton } from "./WalletConnectButton";
+import { AdminNavLink } from "./AdminNavLink";
 import { usingMock } from "@/lib/genlayer";
 
 export function NavBar() {
@@ -24,7 +25,7 @@ export function NavBar() {
           <Link href="/rounds" className="text-muted hover:text-softwhite">Rounds</Link>
           <Link href="/submit" className="text-muted hover:text-softwhite">Submit</Link>
           <Link href="/my" className="text-muted hover:text-softwhite">My submissions</Link>
-          <Link href="/admin" className="text-muted hover:text-softwhite">Admin</Link>
+          <AdminNavLink />
         </nav>
         <WalletConnectButton />
       </div>
