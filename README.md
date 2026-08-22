@@ -51,6 +51,10 @@ npm run dev
 
 Open the local Next.js URL printed by the dev server.
 
+## Production
+
+Production app: [https://grantguard-orcin.vercel.app/](https://grantguard-orcin.vercel.app/)
+
 ## Environment
 
 ```bash
@@ -130,7 +134,6 @@ In live mode, rounds are enumerated from `get_all_round_ids`, proposals are enum
 
 ## Known Limitations
 
-- The Vercel project is linked locally as `grantguard`, but this environment does not have Vercel credentials. Set the env values above in Vercel, redeploy, and run the browser wallet lifecycle check there.
 - Round deadlines are informational; lifecycle close/open/finalise is explicitly controlled by creator or owner transactions.
 - Ranking is intentionally capped at 25 proposals so GenLayer comparative ranking stays bounded.
 - The installed CLI exposes deploy/call/write/receipt/trace and GenVM lint/validation, but no separate direct GenLayer test-runner command.
