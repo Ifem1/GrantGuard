@@ -58,8 +58,20 @@ def run(args: list[str]) -> tuple[str, str | None]:
 def expect_failure(method: str, args: list[str]) -> str:
     proc = subprocess.run([GENLAYER, "write", CONTRACT, method, "--args", *args], cwd=os.getcwd(), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     print(proc.stdout)
-    if proc.returncode == 0:
+    rejected = (
+        proc.returncode != 0
+        or "AssertionError" in proc.stdout
+        or "contract_error" in proc.stdout
+        or "FINISHED_WITH_ERROR" in proc.stdout
+    )
+    if not rejected:
         raise RuntimeError("Expected command to fail: " + method)
+    if "proposal similarity already recorded" in proc.stdout:
+        return "rejected: proposal similarity already recorded"
+    if "round not reviewing" in proc.stdout:
+        return "rejected: round not reviewing"
+    if "AssertionError" in proc.stdout:
+        return "rejected: AssertionError"
     return "rejected: " + " ".join(proc.stdout.strip().splitlines()[-3:])[:500]
 
 

@@ -2,25 +2,25 @@
 
 ## Why GrantGuard Needs GenLayer
 
-GrantGuard reviews ecosystem grant proposals. Deterministic contracts can store rounds, submissions, hashes, rankings, and committee decisions, but they cannot judge feasibility, originality, ecosystem relevance, delivery risk, suspicious semantic overlap, or the comparative quality of close proposals. Those are interpretive tasks, so GrantGuard uses GenLayer consensus for the judgment layer while keeping lifecycle state and arithmetic deterministic.
+GrantGuard reviews ecosystem grant proposals. Deterministic contracts can store rounds, submissions, commitments, rankings, and committee decisions, but they cannot judge feasibility, originality, ecosystem relevance, delivery risk, semantic overlap, or comparative proposal quality. GrantGuard uses GenLayer consensus for that judgment layer while keeping lifecycle state and arithmetic deterministic.
 
 ## Non-Determinism Budget
 
 Only three contract writes are nondeterministic:
 
 - `review_proposal`: independent proposal assessment.
-- `compare_similarity`: same-round similarity assessment against an authoritative bounded corpus.
-- `rank_round`: comparative ranking from already reviewed proposals and stored similarity records.
+- `compare_similarity`: same-round similarity assessment against a bounded corpus.
+- `rank_round`: comparative ranking from stored proposal reviews and stored similarity records.
 
-Round creation, round status transitions, proposal submission, proposal commitment verification, weighted score calculation, round/proposal binding, authorization, duplicate checks, final decisions, and read methods are deterministic.
+Round creation, lifecycle transitions, proposal submission, proposal commitment verification, weighted score calculation, authorization, duplicate checks, final decisions, and read methods are deterministic.
 
 ## Round Lifecycle
 
 Rounds use explicit statuses: `Draft`, `Open`, `Reviewing`, `Finalised`, and `Archived`.
 
-Submissions are accepted only while a round is `Open`. Reviews, similarity checks, and ranking are accepted only while a round is `Reviewing`. Final decisions can be recorded by the round creator or contract owner while a round is `Reviewing` or `Finalised`.
+Submissions are accepted only while a round is `Open`. Reviews, similarity checks, and ranking are accepted only while a round is `Reviewing`. Final decisions can be recorded only after both the authoritative proposal review and authoritative similarity result exist. A round can move to `Finalised` only after every proposal has a final decision.
 
-The allowed forward path is `Draft -> Open -> Reviewing -> Finalised -> Archived`, with `Archived` available from any non-archived state. Deadlines remain useful display and policy metadata, but the canonical lifecycle is the on-chain status.
+The allowed forward path is `Draft -> Open -> Reviewing -> Finalised -> Archived`, with `Archived` also available from any active status. Deadlines remain useful display and policy metadata, but the canonical lifecycle is the on-chain status.
 
 ## Proposal Commitments
 
@@ -46,19 +46,19 @@ The contract computes the weighted overall score from category scores and round 
 - major plagiarism flag materially agrees;
 - recommended decisions are the same or adjacent in the defined decision ladder.
 
-Material disagreement causes GenLayer consensus to reject rather than storing a silent accept/reject outcome. Conservative outcomes such as `INSUFFICIENT_INFORMATION`, `CONSENSUS_NOT_REACHED`, and `MANUAL_REVIEW_REQUIRED` are stored as manual-review proposal status.
+Similarity fields returned during general review are preliminary signals only. The dedicated `compare_similarity` result is authoritative for plagiarism risk, ranking, and final decision readiness.
 
 ## Similarity Consensus
 
-Similarity is separate from general review because plagiarism cannot be proven from one proposal viewed in isolation. `compare_similarity` compares a target proposal against every other proposal in the same round, sorted by proposal ID and chunked into batches of `MAX_SIMILARITY_COMPARISONS = 8`.
+`compare_similarity` compares a target proposal against every other proposal in the same round, sorted by proposal ID and chunked into batches of `MAX_SIMILARITY_COMPARISONS = 8`.
 
-The leader and validator independently produce a similarity level, numeric score, matched sections, rationale, and recommended action for each batch. Adjacent tiers can agree, but LOW versus HIGH/CRITICAL or a high-risk leader with a `NO_ACTION` validator fails. The stored similarity result is the highest material risk result across the batches.
+The leader and validator independently produce a similarity level, numeric score, matched sections, rationale, and recommended action for each batch. Adjacent tiers can agree, but LOW versus HIGH/CRITICAL fails, and HIGH/CRITICAL paired with `NO_ACTION` fails symmetrically no matter which side produced the high-risk result. Each proposal can receive only one authoritative similarity record.
 
 Global-history comparison is deliberately disabled until a real bounded global corpus exists.
 
 ## Ranking Consensus
 
-`rank_round` uses stored proposal reviews and stored similarity records only. It refuses to rank if any same-round proposal is missing either authoritative input. It also refuses rounds above `MAX_RANKING_ITEMS = 25`; the same limit is enforced as the proposal cap before storage so a round cannot be filled beyond the rankable bound.
+`rank_round` uses stored proposal reviews and stored similarity records only. It refuses to rank if any same-round proposal is missing either authoritative input. It also refuses rounds above `MAX_RANKING_ITEMS = 25`; the same limit is enforced as the proposal cap before storage so a round cannot be filled beyond the rankable bound. Each round can receive only one authoritative ranking.
 
 The ranking judge receives deterministic weighted scores, delivery risk, stored similarity level/score/action, and recommended decisions. Adjacent swaps are tolerated only for close-score cases; major inversions across non-close scores reject.
 
@@ -66,26 +66,29 @@ The ranking judge receives deterministic weighted scores, delivery risk, stored 
 
 The frontend uses mock data only when `NEXT_PUBLIC_GRANTGUARD_CONTRACT` is empty. Once a contract address is configured, live reads do not fall back to mock proposals, reviews, similarities, rankings, or decisions. Missing or failed live reads surface as empty or unavailable live state.
 
-Transaction finality is also separated from execution success. The frontend waits for finality, then parses GenVM consensus data and treats only leader execution result `SUCCESS` or leader result status `return` as a successful write.
+Admin lifecycle controls call `set_round_status` and expose only valid forward transitions. Review and ranking controls are disabled unless the active round is `Reviewing`.
+
+Transaction finality is separated from execution success. The frontend waits for finality, then parses GenVM consensus data and treats only `FINISHED_WITH_RETURN`, `SUCCESS`, or leader result status `return` as successful writes. `FINISHED_WITH_ERROR`, explicit error statuses, contract errors, and finality-only receipts are failures.
 
 ## Deterministic Boundaries
 
-The contract validates round weights and score bounds, computes weighted overall scores, verifies SHA-256 proposal commitments, enforces one review and one similarity record per proposal, enforces round/proposal matching, validates lifecycle state, and records final decisions only from the round creator or contract owner.
+The contract validates round weights and score bounds, computes weighted overall scores, verifies SHA-256 proposal commitments, enforces one review and one similarity record per proposal, enforces one ranking per round, validates lifecycle state, and records final decisions only from the round creator or contract owner.
 
 ## Security
 
-Prompts explicitly identify proposal text, URLs, summaries, and disclosures as untrusted evidence. Duplicate round IDs and proposal IDs fail. Invalid statuses, malformed scores, unsupported final decisions, round/proposal mismatches, unsupported similarity scopes, missing authoritative ranking inputs, and unsupported lifecycle transitions fail conservatively.
+Prompts explicitly identify proposal text, URLs, summaries, and disclosures as untrusted evidence. Duplicate round IDs and proposal IDs fail. Invalid statuses, malformed scores, unsupported final decisions, round/proposal mismatches, unsupported similarity scopes, missing authoritative ranking inputs, missing final-decision inputs, unsupported lifecycle transitions, and incomplete finalisation attempts fail conservatively.
 
 ## Deployment And Source Parity
 
 The canonical Studionet deployment is:
 
-- Contract source commit: `f46c92c3ff225ff4309b1ee874a2272ade0081c0`
-- Contract: `0x7566aB07a7517b884033036950fda216c6258e2A`
-- Deployment transaction: `0xc3d23790e1757f1132906883b05e7bc1ed88d663ede7c7f91200fe5bdce8ed34`
+- Contract source commit: `7596373eafde537671dd5065f4c67e58d873bf72`
+- Contract: `0xA894c75ab8b5E559735b363Aa88B34cAc0757696`
+- Deployment transaction: `0xb26d3870c7c27300491656d4deef9128510d1d62433b252728a75c943b7cbf94`
+- Explorer: `https://explorer-studio.genlayer.com`
 
 Later documentation and integration-script commits do not change `contracts/GrantGuardProtocol.py`; the deployed source remains tied to the source commit above.
 
 ## Runner And Tooling Note
 
-`genvm-lint check contracts/GrantGuardProtocol.py` passes with validation on the installed toolchain. The linter reports a newer `py-genlayer` runner is available, but the contract validates locally on the installed runner. The installed `genlayer` and `genvm-lint` commands expose deploy/call/write/receipt/trace and lint/validation flows, but no separate direct GenLayer test-runner command.
+`genvm-lint check contracts/GrantGuardProtocol.py` passes with validation on the installed toolchain. The installed `genlayer` and `genvm-lint` commands expose deploy/call/write/receipt/trace and lint/validation flows, but no separate direct GenLayer test-runner command in this environment.
