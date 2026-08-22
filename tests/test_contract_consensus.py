@@ -155,6 +155,15 @@ class ConsensusToleranceTests(unittest.TestCase):
             {"similarity_level": "HIGH", "similarity_score": 77, "matched_sections": [], "reasoning_summary": "", "recommended_action": "MANUAL_REVIEW"},
         ))
 
+    def test_similarity_high_risk_action_check_is_symmetric(self):
+        self.assertFalse(gg.similarities_agree(
+            {"similarity_level": "HIGH", "similarity_score": 82, "matched_sections": [], "reasoning_summary": "", "recommended_action": "MANUAL_REVIEW"},
+            {"similarity_level": "MEDIUM", "similarity_score": 76, "matched_sections": [], "reasoning_summary": "", "recommended_action": "NO_ACTION"},
+        ))
+        self.assertFalse(gg.similarities_agree(
+            {"similarity_level": "MEDIUM", "similarity_score": 76, "matched_sections": [], "reasoning_summary": "", "recommended_action": "NO_ACTION"},
+            {"similarity_level": "HIGH", "similarity_score": 82, "matched_sections": [], "reasoning_summary": "", "recommended_action": "MANUAL_REVIEW"},
+        ))
     def test_ranking_adjacent_close_swap_accepts(self):
         items = [{"proposal_id": "a", "overall_score": 82}, {"proposal_id": "b", "overall_score": 80}, {"proposal_id": "c", "overall_score": 60}]
         leader = {"ranked_proposals": [{"proposal_id": "a", "rank": 1}, {"proposal_id": "b", "rank": 2}, {"proposal_id": "c", "rank": 3}]}
@@ -284,6 +293,78 @@ process.stdout.write('0x' + crypto.createHash('sha256').update(JSON.stringify(or
         })
         c.rank_round("r1")
         self.assertIn("p1", c.rankings["r1"])
+
+    def test_similarity_is_immutable_once_recorded(self):
+        c = make_contract("0xcreator")
+        c.create_round("r1", json.dumps(ROUND))
+        p = proposal()
+        c.submit_proposal("r1", "p1", json.dumps(p), gg.canonical_proposal_commitment("r1", p))
+        c.set_round_status("r1", "Reviewing")
+        c.compare_similarity("r1", "p1", "ROUND_ONLY")
+        with self.assertRaises(AssertionError):
+            c.compare_similarity("r1", "p1", "ROUND_ONLY")
+
+    def test_ranking_is_immutable_once_recorded(self):
+        c = make_contract("0xcreator")
+        c.create_round("r1", json.dumps(ROUND))
+        p = proposal()
+        c.submit_proposal("r1", "p1", json.dumps(p), gg.canonical_proposal_commitment("r1", p))
+        c.set_round_status("r1", "Reviewing")
+        c.reviews["p1"] = json.dumps(gg.normalize_review(ROUND, review()))
+        c.similarities["p1"] = json.dumps({
+            "similarity_level": "LOW",
+            "similarity_score": 0,
+            "matched_sections": [],
+            "reasoning_summary": "single proposal",
+            "recommended_action": "NO_ACTION",
+        })
+        c.rank_round("r1")
+        with self.assertRaises(AssertionError):
+            c.rank_round("r1")
+
+    def test_final_decision_requires_review_and_similarity(self):
+        c = make_contract("0xcreator")
+        c.create_round("r1", json.dumps(ROUND))
+        p = proposal()
+        c.submit_proposal("r1", "p1", json.dumps(p), gg.canonical_proposal_commitment("r1", p))
+        c.set_round_status("r1", "Reviewing")
+        decision = {"proposal_id": "p1", "decision": "ACCEPTED", "funding_amount": 1000, "rationale": "ok"}
+        with self.assertRaises(AssertionError):
+            c.set_final_decision("r1", "p1", json.dumps(decision))
+        c.reviews["p1"] = json.dumps(gg.normalize_review(ROUND, review()))
+        with self.assertRaises(AssertionError):
+            c.set_final_decision("r1", "p1", json.dumps(decision))
+        c.similarities["p1"] = json.dumps({
+            "similarity_level": "LOW",
+            "similarity_score": 0,
+            "matched_sections": [],
+            "reasoning_summary": "single proposal",
+            "recommended_action": "NO_ACTION",
+        })
+        c.set_final_decision("r1", "p1", json.dumps(decision))
+        self.assertIn("p1", c.final_decisions)
+
+    def test_finalised_round_requires_decisions_for_all_proposals(self):
+        c = make_contract("0xcreator")
+        c.create_round("r1", json.dumps(ROUND))
+        for pid in ("p1", "p2"):
+            p = proposal(project_name=pid)
+            c.submit_proposal("r1", pid, json.dumps(p), gg.canonical_proposal_commitment("r1", p))
+            c.reviews[pid] = json.dumps(gg.normalize_review(ROUND, review()))
+            c.similarities[pid] = json.dumps({
+                "similarity_level": "LOW",
+                "similarity_score": 0,
+                "matched_sections": [],
+                "reasoning_summary": "ok",
+                "recommended_action": "NO_ACTION",
+            })
+        c.set_round_status("r1", "Reviewing")
+        c.set_final_decision("r1", "p1", json.dumps({"proposal_id": "p1", "decision": "ACCEPTED"}))
+        with self.assertRaises(AssertionError):
+            c.set_round_status("r1", "Finalised")
+        c.set_final_decision("r1", "p2", json.dumps({"proposal_id": "p2", "decision": "REJECTED"}))
+        c.set_round_status("r1", "Finalised")
+        self.assertEqual(json.loads(c.rounds["r1"])["status"], "Finalised")
 
     def test_similarity_batch_aggregation_selects_highest_material_result(self):
         low = {

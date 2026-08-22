@@ -296,6 +296,8 @@ def similarities_agree(leader: dict, validator: dict) -> bool:
         return False
     if leader["similarity_level"] in ("HIGH", "CRITICAL") and validator["recommended_action"] == "NO_ACTION":
         return False
+    if validator["similarity_level"] in ("HIGH", "CRITICAL") and leader["recommended_action"] == "NO_ACTION":
+        return False
     return True
 
 
@@ -437,6 +439,10 @@ class GrantGuardProtocol(gl.Contract):
         assert new_status in ROUND_STATUSES, "bad status"
         current = round_data.get("status")
         assert new_status in ROUND_TRANSITIONS[current], "invalid round transition"
+        if new_status == "Finalised":
+            ids = json.loads(self.round_proposals.get(round_id) or "[]")
+            for pid in ids:
+                assert pid in self.final_decisions, "missing final decision"
         round_data["status"] = new_status
         self.rounds[round_id] = json.dumps(round_data)
 
@@ -487,6 +493,7 @@ class GrantGuardProtocol(gl.Contract):
         assert comparison_scope == "ROUND_ONLY", "only bounded round comparison supported"
         round_data = self._round_payload(round_id)
         assert round_data.get("status") == "Reviewing", "round not reviewing"
+        assert proposal_id not in self.similarities, "proposal similarity already recorded"
         target = self._proposal_payload(round_id, proposal_id)
         ids = json.loads(self.round_proposals.get(round_id) or "[]")
         other_ids = sorted([pid for pid in ids if pid != proposal_id])
@@ -526,6 +533,7 @@ class GrantGuardProtocol(gl.Contract):
     def rank_round(self, round_id: str) -> None:
         round_data = self._round_payload(round_id)
         assert round_data.get("status") == "Reviewing", "round not reviewing"
+        assert round_id not in self.rankings, "round already ranked"
         ids = json.loads(self.round_proposals.get(round_id) or "[]")
         assert len(ids) <= MAX_RANKING_ITEMS, "round too large for ranking"
         items = []
@@ -565,6 +573,8 @@ class GrantGuardProtocol(gl.Contract):
         round_data = self._round_payload(round_id)
         assert round_data.get("status") in ("Reviewing", "Finalised"), "round not finalizing"
         self._authorize_round_manager(round_data)
+        assert proposal_id in self.reviews, "missing proposal review"
+        assert proposal_id in self.similarities, "missing proposal similarity"
         decision = _loads(decision_json)
         assert decision.get("decision") in FINAL_DECISIONS, "bad decision"
         decision["round_id"] = round_id

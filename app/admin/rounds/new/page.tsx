@@ -40,7 +40,7 @@ export default function NewRoundPage() {
         criteria_weights: form.weights,
         plagiarism_sensitivity: form.plagiarism_sensitivity,
         visibility: form.visibility,
-        status: "Open",
+        status: "Draft",
         applicant_count: 0,
         max_proposals: Number(form.max_proposals),
         creator: creator ?? undefined,
@@ -49,7 +49,7 @@ export default function NewRoundPage() {
         const created = JSON.parse(localStorage.getItem("gg.myRounds") ?? "[]");
         localStorage.setItem("gg.myRounds", JSON.stringify([id, ...created]));
       } catch {}
-      router.push(`/rounds/${id}`);
+      router.push("/admin");
     } catch (err: any) {
       setSubmitting(false);
       alert(`Create round failed: ${err?.message ?? String(err)}`);
@@ -62,7 +62,7 @@ export default function NewRoundPage() {
     <div className="max-w-3xl mx-auto px-6 py-12">
       <div className="label-eyebrow mb-2">Admin</div>
       <h1 className="font-display text-4xl text-softwhite mb-2">Create grant round</h1>
-      <p className="text-muted mb-10">Open a new round, define criteria weights, and publish it for submissions.</p>
+      <p className="text-muted mb-10">Create a draft round, define criteria weights, then open it from the admin lifecycle controls.</p>
 
       <form onSubmit={submit} className="space-y-6">
         <fieldset className="panel p-6">

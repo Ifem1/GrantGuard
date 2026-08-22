@@ -55,6 +55,14 @@ def run(args: list[str]) -> tuple[str, str | None]:
     return proc.stdout, match.group(1) if match else None
 
 
+def expect_failure(method: str, args: list[str]) -> str:
+    proc = subprocess.run([GENLAYER, "write", CONTRACT, method, "--args", *args], cwd=os.getcwd(), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    print(proc.stdout)
+    if proc.returncode == 0:
+        raise RuntimeError("Expected command to fail: " + method)
+    return "rejected: " + " ".join(proc.stdout.strip().splitlines()[-3:])[:500]
+
+
 def write(method: str, args: list[str]) -> str:
     _, tx = run([GENLAYER, "write", CONTRACT, method, "--args", *args])
     if not tx:
@@ -113,13 +121,14 @@ def main() -> int:
         },
         "plagiarism_sensitivity": "HIGH",
         "visibility": "public",
-        "status": "Open",
+        "status": "Draft",
         "applicant_count": 0,
         "max_proposals": 25,
     }
 
     txs: dict[str, str] = {}
     txs["create_round"] = write("create_round", [round_id, json.dumps(round_payload, separators=(",", ":"), ensure_ascii=False)])
+    txs["open_round"] = write("set_round_status", [round_id, "Open"])
 
     proposals = {
         "A": proposal("Integration Alpha", "A", 30000),
@@ -145,22 +154,26 @@ def main() -> int:
     for label, data in proposals.items():
         txs["review_" + label] = write("review_proposal", [round_id, data["_pid"]])
         txs["similarity_" + label] = write("compare_similarity", [round_id, data["_pid"], "ROUND_ONLY"])
+    negative_path = expect_failure("compare_similarity", [round_id, proposals["A"]["_pid"], "ROUND_ONLY"])
     txs["ranking"] = write("rank_round", [round_id])
-    decision = {
-        "proposal_id": proposals["C"]["_pid"],
-        "decision": "REJECTED",
-        "funding_amount": "0",
-        "committee_note": "Integration proof final decision for duplicate proposal.",
-        "milestones_required": [],
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    txs["final_decision"] = write("set_final_decision", [round_id, proposals["C"]["_pid"], json.dumps(decision, separators=(",", ":"), ensure_ascii=False)])
+    for label, data in proposals.items():
+        decision = {
+            "proposal_id": data["_pid"],
+            "decision": "REJECTED" if label == "C" else "WAITLISTED",
+            "funding_amount": "0",
+            "committee_note": "Integration proof final decision for proposal " + label,
+            "milestones_required": [],
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        txs["final_decision_" + label] = write("set_final_decision", [round_id, data["_pid"], json.dumps(decision, separators=(",", ":"), ensure_ascii=False)])
+    txs["finalise_round"] = write("set_round_status", [round_id, "Finalised"])
 
     call("get_round_rankings", [round_id])
     call("get_final_decision", [proposals["C"]["_pid"]])
+    call("get_round", [round_id])
 
     print("STUDIONET INTEGRATION PASSED")
-    print(json.dumps({"round_id": round_id, "transactions": txs}, indent=2))
+    print(json.dumps({"round_id": round_id, "transactions": txs, "negative_path": negative_path}, indent=2))
     return 0
 
 

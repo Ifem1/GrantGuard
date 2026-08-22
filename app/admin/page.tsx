@@ -9,12 +9,14 @@ import {
   getReview,
   getSimilarity,
   getRoundRanking,
+  getDecision,
+  setRoundStatus,
   getContractOwner,
   contractAddress,
   usingMock,
 } from "@/lib/genlayer";
 import { useWallet, sameAddr } from "@/lib/wallet";
-import type { GrantRound, Proposal, ReviewResult, SimilarityFinding, Ranking } from "@/lib/types";
+import type { GrantRound, Proposal, ReviewResult, SimilarityFinding, Ranking, CommitteeDecision } from "@/lib/types";
 import { MetricCard } from "@/components/MetricCard";
 import { RankingTable } from "@/components/RankingTable";
 import { StatusPill } from "@/components/StatusPill";
@@ -30,8 +32,28 @@ export default function AdminDashboard() {
   const [reviews, setReviews] = useState<(ReviewResult | undefined)[]>([]);
   const [sims, setSims] = useState<(SimilarityFinding | undefined)[]>([]);
   const [ranking, setRanking] = useState<Ranking | null>(null);
+  const [decisions, setDecisions] = useState<(CommitteeDecision | undefined)[]>([]);
   const [ownerAddr, setOwnerAddr] = useState<string | null>(null);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [lifecycleLog, setLifecycleLog] = useState("");
   const isSiteOwner = sameAddr(address, ownerAddr);
+
+  async function refreshActive(roundId = active?.round_id) {
+    if (!roundId) return;
+    const freshRound = await getRound(roundId);
+    if (freshRound) {
+      setActive((current) =>
+        current?.round_id === freshRound.round_id && JSON.stringify(current) === JSON.stringify(freshRound) ? current : freshRound
+      );
+      setAllRounds((rs) => rs.map((r) => (r.round_id === freshRound.round_id ? freshRound : r)));
+    }
+    const ps = await getProposals(roundId);
+    setProposals(ps);
+    setReviews(await Promise.all(ps.map((p) => getReview(p.proposal_id))));
+    setSims(await Promise.all(ps.map((p) => getSimilarity(p.proposal_id))));
+    setDecisions(await Promise.all(ps.map((p) => getDecision(p.proposal_id))));
+    setRanking((await getRoundRanking(roundId)) ?? null);
+  }
 
   useEffect(() => {
     (async () => {
@@ -59,13 +81,7 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     if (!active) return;
-    (async () => {
-      const ps = await getProposals(active.round_id);
-      setProposals(ps);
-      setReviews(await Promise.all(ps.map((p) => getReview(p.proposal_id))));
-      setSims(await Promise.all(ps.map((p) => getSimilarity(p.proposal_id))));
-      setRanking((await getRoundRanking(active.round_id)) ?? null);
-    })();
+    refreshActive(active.round_id);
   }, [active]);
 
   if (!address) {
@@ -112,8 +128,32 @@ export default function AdminDashboard() {
     reviews.filter(Boolean).reduce((s, r) => s + (r?.overall_score ?? 0), 0) / Math.max(1, reviewed)
   );
   const highRisk = sims.filter((s) => s && (s.similarity_level === "HIGH" || s.similarity_level === "CRITICAL")).length;
-  const needsManual = reviews.filter((r) => r?.recommended_decision === "FLAG_FOR_MANUAL_REVIEW").length;
+  const manualStates = new Set(["FLAG_FOR_MANUAL_REVIEW", "INSUFFICIENT_INFORMATION", "CONSENSUS_NOT_REACHED", "MANUAL_REVIEW_REQUIRED"]);
+  const needsManual = reviews.filter((r) => r?.recommended_decision && manualStates.has(r.recommended_decision)).length;
   const totalReq = proposals.reduce((s, p) => s + p.budget, 0);
+  const finalDecisionCount = decisions.filter(Boolean).length;
+  const reviewDisabledReason =
+    active.status !== "Reviewing"
+      ? active.status === "Open"
+        ? "Begin review first. GenLayer review, similarity, and ranking writes are only accepted while the round is Reviewing."
+        : `Review controls are unavailable while the round is ${active.status}.`
+      : undefined;
+
+  async function transition(status: GrantRound["status"]) {
+    const current = active;
+    if (!current) return;
+    setLifecycleBusy(true);
+    setLifecycleLog(`Submitting ${status} transition...`);
+    try {
+      const { txHash } = await setRoundStatus(current.round_id, status);
+      setLifecycleLog(`Status updated to ${status}${txHash ? ` · ${txHash.slice(0, 14)}` : ""}`);
+      await refreshActive(current.round_id);
+    } catch (e: any) {
+      setLifecycleLog(`Transition failed: ${e?.message ?? e}`);
+    } finally {
+      setLifecycleBusy(false);
+    }
+  }
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-12">
@@ -178,7 +218,20 @@ export default function AdminDashboard() {
               )}
             </ul>
           </div>
-          <RunReviewsButton roundId={active.round_id} proposalIds={proposals.map((p) => p.proposal_id)} />
+          <LifecycleControls
+            status={active.status}
+            busy={lifecycleBusy}
+            proposalCount={proposals.length}
+            finalDecisionCount={finalDecisionCount}
+            onTransition={transition}
+            log={lifecycleLog}
+          />
+          <RunReviewsButton
+            roundId={active.round_id}
+            proposalIds={proposals.map((p) => p.proposal_id)}
+            disabledReason={reviewDisabledReason}
+            onComplete={() => refreshActive(active.round_id)}
+          />
         </div>
       </div>
 
@@ -214,7 +267,7 @@ export default function AdminDashboard() {
           <div className="space-y-3">
             {proposals.map((p, i) => {
               const r = reviews[i];
-              if (!r || r.recommended_decision !== "FLAG_FOR_MANUAL_REVIEW") return null;
+              if (!r || !manualStates.has(r.recommended_decision)) return null;
               return (
                 <Link
                   key={p.proposal_id}
@@ -229,12 +282,82 @@ export default function AdminDashboard() {
                 </Link>
               );
             })}
-            {!reviews.some((r) => r?.recommended_decision === "FLAG_FOR_MANUAL_REVIEW") && (
+            {!reviews.some((r) => r?.recommended_decision && manualStates.has(r.recommended_decision)) && (
               <p className="text-xs text-muted font-mono">Nothing pending committee attention.</p>
             )}
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function LifecycleControls({
+  status,
+  busy,
+  proposalCount,
+  finalDecisionCount,
+  onTransition,
+  log,
+}: {
+  status: GrantRound["status"];
+  busy: boolean;
+  proposalCount: number;
+  finalDecisionCount: number;
+  onTransition: (status: GrantRound["status"]) => void;
+  log: string;
+}) {
+  const finaliseBlocked = status === "Reviewing" && proposalCount > finalDecisionCount;
+  const actions: { label: string; next: GrantRound["status"]; disabled?: boolean; hint?: string }[] =
+    status === "Draft"
+      ? [
+          { label: "Open round", next: "Open" },
+          { label: "Archive", next: "Archived" },
+        ]
+      : status === "Open"
+      ? [
+          { label: "Close submissions & begin review", next: "Reviewing" },
+          { label: "Archive", next: "Archived" },
+        ]
+      : status === "Reviewing"
+      ? [
+          {
+            label: "Finalise round",
+            next: "Finalised",
+            disabled: finaliseBlocked,
+            hint: finaliseBlocked ? `Record final decisions for all proposals first (${finalDecisionCount}/${proposalCount}).` : undefined,
+          },
+          { label: "Archive", next: "Archived" },
+        ]
+      : status === "Finalised"
+      ? [{ label: "Archive", next: "Archived" }]
+      : [];
+
+  return (
+    <div className="panel p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="font-display text-lg text-softwhite">Lifecycle</h4>
+        <StatusPill status={status} />
+      </div>
+      {actions.length === 0 ? (
+        <p className="text-xs text-muted font-mono">No further transitions.</p>
+      ) : (
+        <div className="space-y-2">
+          {actions.map((action) => (
+            <div key={action.next}>
+              <button
+                onClick={() => onTransition(action.next)}
+                disabled={busy || action.disabled}
+                className="w-full border border-bronze/60 text-softwhite font-mono text-xs tracking-widest uppercase px-4 py-2 rounded-sm hover:border-gold hover:text-gold disabled:opacity-40"
+              >
+                {busy ? "Waiting for GenVM..." : action.label}
+              </button>
+              {action.hint && <p className="mt-1 text-[11px] text-muted font-mono">{action.hint}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+      {log && <p className="mt-3 text-[11px] text-muted font-mono leading-relaxed">{log}</p>}
     </div>
   );
 }

@@ -62,26 +62,44 @@ export function getGenvmExecutionResult(receipt: any): { ok: boolean; detail: st
   const leaderReceipt = Array.isArray(consensus?.leader_receipt)
     ? consensus.leader_receipt[0]
     : consensus?.leader_receipt ?? receipt?.leader_receipt;
+  const txExecutionResult = receipt?.txExecutionResult ?? receipt?.transactionExecutionResult ?? {};
   const executionResult = String(
     leaderReceipt?.execution_result ??
       leaderReceipt?.executionResult ??
       receipt?.txExecutionResultName ??
+      txExecutionResult?.name ??
+      txExecutionResult?.resultName ??
       receipt?.executionResultName ??
       receipt?.execution_result ??
       ""
   ).toUpperCase();
-  const returnStatus = String(leaderReceipt?.result?.status ?? leaderReceipt?.result ?? "").toUpperCase();
+  const returnStatus = String(
+    leaderReceipt?.result?.status ??
+      leaderReceipt?.result?.code ??
+      leaderReceipt?.result_code ??
+      leaderReceipt?.result ??
+      txExecutionResult?.status ??
+      ""
+  ).toUpperCase();
   const error =
     leaderReceipt?.genvm_result?.stderr ??
     leaderReceipt?.error ??
     leaderReceipt?.result?.payload ??
+    txExecutionResult?.error ??
     receipt?.error ??
     "";
 
-  if (executionResult === "SUCCESS" || returnStatus === "RETURN") {
+  if (executionResult === "FINISHED_WITH_RETURN" || executionResult === "SUCCESS" || returnStatus === "RETURN") {
     return { ok: true, detail: executionResult || returnStatus };
   }
-  if (executionResult === "ERROR" || executionResult === "FAILURE" || returnStatus === "CONTRACT_ERROR") {
+  if (
+    executionResult === "FINISHED_WITH_ERROR" ||
+    executionResult === "ERROR" ||
+    executionResult === "FAILURE" ||
+    executionResult === "CONTRACT_ERROR" ||
+    returnStatus === "CONTRACT_ERROR" ||
+    returnStatus === "ERROR"
+  ) {
     return { ok: false, detail: typeof error === "string" && error ? error : executionResult || returnStatus };
   }
   return { ok: false, detail: "Transaction finalized, but GenVM execution success was not present in the receipt." };
@@ -166,6 +184,15 @@ export async function createRound(round: GrantRound): Promise<{ txHash?: string 
     return writeAndWaitForFinality("create_round", [round_id, JSON.stringify(payload)]);
   }
   rounds = [round, ...rounds];
+  return {};
+}
+
+export async function setRoundStatus(roundId: string, status: GrantRound["status"]): Promise<{ txHash?: string }> {
+  const client = await getClient(true);
+  if (client) {
+    return writeAndWaitForFinality("set_round_status", [roundId, status]);
+  }
+  rounds = rounds.map((r) => (r.round_id === roundId ? { ...r, status } : r));
   return {};
 }
 

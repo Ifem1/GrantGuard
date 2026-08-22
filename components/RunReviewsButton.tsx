@@ -6,9 +6,13 @@ import { triggerReview, triggerSimilarity, triggerRanking, usingMock } from "@/l
 export function RunReviewsButton({
   roundId,
   proposalIds,
+  disabledReason,
+  onComplete,
 }: {
   roundId: string;
   proposalIds: string[];
+  disabledReason?: string;
+  onComplete?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
@@ -48,6 +52,7 @@ export function RunReviewsButton({
     }
 
     setBusy(false);
+    onComplete?.();
   }
 
   return (
@@ -63,11 +68,14 @@ export function RunReviewsButton({
       </p>
       <button
         onClick={run}
-        disabled={busy || proposalIds.length === 0}
+        disabled={busy || proposalIds.length === 0 || Boolean(disabledReason)}
         className="w-full bg-gold text-ink font-mono text-xs tracking-widest uppercase py-2.5 rounded-sm hover:bg-sand disabled:opacity-40"
       >
         {busy ? "Running consensus…" : "Trigger review + ranking"}
       </button>
+      {disabledReason && (
+        <p className="mt-3 text-xs text-muted font-mono leading-relaxed">{disabledReason}</p>
+      )}
       {log.length > 0 && (
         <pre className="mt-4 text-[10px] font-mono text-muted whitespace-pre-wrap leading-relaxed max-h-48 overflow-auto bg-ink/60 p-3 rounded-sm border border-bronze/40">
           {log.join("\n")}
