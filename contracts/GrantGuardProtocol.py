@@ -121,25 +121,37 @@ def _canonical_json(obj) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"))
 
 
+def _text(value) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _hash_text(value) -> str:
+    if isinstance(value, int):
+        return "0x" + format(value, "064x")
+    return str(value)
+
+
 def canonical_proposal_commitment(round_id: str, proposal: dict) -> str:
     immutable = {
         "round_id": round_id,
-        "project_name": proposal.get("project_name", ""),
-        "team_name": proposal.get("team_name", ""),
-        "wallet": proposal.get("wallet", ""),
-        "contact": proposal.get("contact", ""),
-        "summary": proposal.get("summary", ""),
-        "problem": proposal.get("problem", ""),
-        "solution": proposal.get("solution", ""),
-        "why_ecosystem": proposal.get("why_ecosystem", ""),
-        "architecture": proposal.get("architecture", ""),
-        "milestones": proposal.get("milestones", ""),
-        "timeline": proposal.get("timeline", ""),
+        "project_name": _text(proposal.get("project_name", "")),
+        "team_name": _text(proposal.get("team_name", "")),
+        "wallet": _text(proposal.get("wallet", "")),
+        "contact": _text(proposal.get("contact", "")),
+        "summary": _text(proposal.get("summary", "")),
+        "problem": _text(proposal.get("problem", "")),
+        "solution": _text(proposal.get("solution", "")),
+        "why_ecosystem": _text(proposal.get("why_ecosystem", "")),
+        "architecture": _text(proposal.get("architecture", "")),
+        "milestones": _text(proposal.get("milestones", "")),
+        "timeline": _text(proposal.get("timeline", "")),
         "budget": proposal.get("budget", 0),
-        "team_background": proposal.get("team_background", ""),
-        "prior_work": proposal.get("prior_work", ""),
-        "links": proposal.get("links", ""),
-        "disclosure": proposal.get("disclosure", ""),
+        "team_background": _text(proposal.get("team_background", "")),
+        "prior_work": _text(proposal.get("prior_work", "")),
+        "links": _text(proposal.get("links", "")),
+        "disclosure": _text(proposal.get("disclosure", "")),
         "honesty_confirmed": proposal.get("honesty_confirmed", False),
     }
     return "0x" + hashlib.sha256(_canonical_json(immutable).encode("utf-8")).hexdigest()
@@ -318,7 +330,7 @@ class GrantGuardProtocol(gl.Contract):
         assert data.get("honesty_confirmed") is True, "honesty confirmation required"
         data["round_id"] = round_id
         expected_hash = canonical_proposal_commitment(round_id, data)
-        assert proposal_hash == expected_hash, "proposal hash mismatch"
+        assert _hash_text(proposal_hash) == expected_hash, "proposal hash mismatch"
         data["status"] = "SUBMITTED"
         data["proposal_hash"] = proposal_hash
         self.proposals[proposal_id] = json.dumps(data)
