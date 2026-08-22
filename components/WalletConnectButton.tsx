@@ -11,9 +11,11 @@ export function WalletConnectButton() {
       try {
         const accs = await eth.request({ method: "eth_requestAccounts" });
         if (accs?.[0]) return setAddr(accs[0]);
-      } catch {}
+      } catch (err: any) {
+        alert(err?.message ?? "Wallet connection failed.");
+      }
     }
-    setAddr("0x" + Math.random().toString(16).slice(2, 42).padEnd(40, "0"));
+    alert("No browser wallet found. Install or unlock a wallet to send live GenLayer transactions.");
   }
 
   return (

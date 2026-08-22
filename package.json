@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "tsc --noEmit",
+    "test": "python -m unittest discover -s tests",
+    "test:contract": "python -m unittest discover -s tests",
+    "test:integration": "python scripts/studionet_integration.py"
   },
   "dependencies": {
     "next": "^16.0.0",

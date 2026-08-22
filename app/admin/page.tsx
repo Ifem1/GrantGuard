@@ -172,7 +172,7 @@ export default function AdminDashboard() {
               <li className="flex justify-between gap-3"><span className="text-muted">Contract</span><span className="text-softwhite truncate" title={contractAddress || "(mock)"}>
                 {usingMock ? "MOCK" : `${contractAddress.slice(0, 6)}…${contractAddress.slice(-4)}`}
               </span></li>
-              <li className="flex justify-between"><span className="text-muted">Mode</span><span className={usingMock ? "text-rust" : "text-sage"}>{usingMock ? "mock fallback" : "live · llm-judge"}</span></li>
+              <li className="flex justify-between"><span className="text-muted">Mode</span><span className={usingMock ? "text-rust" : "text-sage"}>{usingMock ? "mock mode" : "live · llm-judge"}</span></li>
               {ownerAddr && (
                 <li className="flex justify-between gap-3"><span className="text-muted">Site owner</span><span className="text-softwhite">{ownerAddr.slice(0, 6)}…{ownerAddr.slice(-4)}</span></li>
               )}

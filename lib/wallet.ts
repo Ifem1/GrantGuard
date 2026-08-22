@@ -39,11 +39,7 @@ export function useWallet() {
         }
       } catch {}
     }
-    // Demo fallback so the UI is testable without a wallet.
-    const mock = "0x" + Math.random().toString(16).slice(2, 42).padEnd(40, "0");
-    setAddr(mock);
-    localStorage.setItem(KEY, mock);
-    return mock;
+    throw new Error("No browser wallet found. Install or unlock a wallet to send live GenLayer transactions.");
   }
 
   function disconnect() {

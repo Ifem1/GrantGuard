@@ -1,0 +1,7 @@
+contracts:
+  - contracts/GrantGuardProtocol.py
+network:
+  name: studionet
+  rpc: https://studio.genlayer.com/api
+tests:
+  direct: tests/test_contract_consensus.py

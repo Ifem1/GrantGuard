@@ -19,7 +19,7 @@ import { mockRounds, mockProposals, mockReviews, mockSimilarities, mockDecisions
 import { riskAdjustedScore } from "./scoring";
 
 const CONTRACT_ADDRESS = (process.env.NEXT_PUBLIC_GRANTGUARD_CONTRACT ?? "").trim();
-const CHAIN_NAME = (process.env.NEXT_PUBLIC_GENLAYER_CHAIN ?? "localnet").trim();
+const CHAIN_NAME = (process.env.NEXT_PUBLIC_GENLAYER_CHAIN ?? "studionet").trim();
 const RPC_ENDPOINT = (process.env.NEXT_PUBLIC_GENLAYER_RPC ?? "https://studio.genlayer.com/api").trim();
 export const usingMock = !CONTRACT_ADDRESS;
 export const contractAddress = CONTRACT_ADDRESS;
@@ -36,9 +36,9 @@ async function getClient(): Promise<any> {
 
   const sdk = await import("genlayer-js");
   const chains = await import("genlayer-js/chains");
-  const chain = (chains as any)[CHAIN_NAME] ?? (chains as any).localnet;
+  const chain = (chains as any)[CHAIN_NAME] ?? (chains as any).studionet;
 
-  // Try to use the injected wallet account first; otherwise generate a throwaway local account.
+  // Live writes must use the user's wallet. Throwaway accounts are only for explicit mock mode.
   const eth = (window as any).ethereum;
   if (eth?.request) {
     try {
@@ -47,12 +47,51 @@ async function getClient(): Promise<any> {
     } catch {}
   }
   if (!_account) {
-    const pk = sdk.generatePrivateKey();
-    _account = sdk.createAccount(pk);
+    throw new Error("Connect a wallet before sending live GenLayer transactions.");
   }
 
-  _client = sdk.createClient({ chain, account: _account, endpoint: RPC_ENDPOINT });
+  _client = sdk.createClient({ chain, account: _account, endpoint: RPC_ENDPOINT, provider: eth } as any);
+  if (typeof _client.connect === "function") {
+    await _client.connect(CHAIN_NAME);
+  }
   return _client;
+}
+
+async function writeAndWaitForFinality(functionName: string, args: unknown[]): Promise<{ txHash?: string }> {
+  const client = await getClient();
+  if (!client) return {};
+  const types = await import("genlayer-js/types").catch(() => null as any);
+  const result = await client.writeContract({
+    address: CONTRACT_ADDRESS,
+    functionName,
+    args,
+    value: 0n,
+  });
+  const txHash = typeof result === "string" ? result : result?.hash ?? result?.transactionHash;
+  if (!txHash) throw new Error(`No transaction hash returned for ${functionName}.`);
+  const receipt: any = await client.waitForTransactionReceipt({
+    hash: txHash,
+    status: types?.TransactionStatus?.FINALIZED ?? types?.TransactionStatus?.ACCEPTED,
+    fullTransaction: false,
+  });
+  const consensus = receipt?.consensus_data ?? receipt?.consensusData ?? {};
+  const txResult =
+    receipt?.tx_data_decoded?.result ??
+    consensus?.leader_receipt?.[0]?.execution_result ??
+    receipt?.result ??
+    receipt?.executionResult ??
+    receipt?.status;
+  const normalized = String(txResult ?? "").toUpperCase();
+  const ok = normalized === "SUCCESS" || normalized === "FINALIZED" || normalized === "ACCEPTED";
+  if (!ok) {
+    const stderr =
+      consensus?.leader_receipt?.[0]?.error ??
+      consensus?.leader_receipt?.[0]?.stderr ??
+      receipt?.error ??
+      `${functionName} execution failed`;
+    throw new Error(typeof stderr === "string" ? stderr : JSON.stringify(stderr));
+  }
+  return { txHash };
 }
 
 async function safeRead<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
@@ -111,50 +150,33 @@ export async function getRound(id: string): Promise<GrantRound | undefined> {
 
 export async function createRound(round: GrantRound): Promise<{ txHash?: string }> {
   const client = await getClient();
-  let txHash: string | undefined;
   if (client) {
     const { round_id, ...payload } = round;
-    const result = await client.writeContract({
-      address: CONTRACT_ADDRESS,
-      functionName: "create_round",
-      args: [round_id, JSON.stringify(payload)],
-      value: 0n,
-    });
-    txHash = typeof result === "string" ? result : result?.hash ?? result?.transactionHash;
-    if (txHash) {
-      try {
-        const receipt: any = await client.waitForTransactionReceipt({
-          hash: txHash,
-          retries: 60,
-          interval: 2000,
-        });
-        const consensus = receipt?.consensus_data ?? receipt?.consensusData ?? {};
-        const txResult =
-          receipt?.tx_data_decoded?.result ??
-          consensus?.leader_receipt?.[0]?.execution_result ??
-          receipt?.result ??
-          receipt?.executionResult;
-        const ok = String(txResult ?? "").toUpperCase() === "SUCCESS";
-        if (!ok) {
-          const stderr =
-            consensus?.leader_receipt?.[0]?.error ??
-            consensus?.leader_receipt?.[0]?.stderr ??
-            receipt?.error ??
-            "Contract execution failed";
-          throw new Error(typeof stderr === "string" ? stderr : JSON.stringify(stderr));
-        }
-      } catch (e: any) {
-        throw new Error(e?.message ?? `On-chain execution failed (tx ${txHash})`);
-      }
-    }
+    return writeAndWaitForFinality("create_round", [round_id, JSON.stringify(payload)]);
   }
   rounds = [round, ...rounds];
-  return { txHash };
+  return {};
 }
 
 // ---------- Proposals ----------
 
 export async function getProposals(roundId?: string): Promise<Proposal[]> {
+  if (!usingMock && roundId) {
+    const client = await getClient();
+    if (!client) return [];
+    const idsJson = await safeRead<string>(
+      () => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_proposals_by_round", args: [roundId] }),
+      "[]"
+    );
+    const ids = JSON.parse(idsJson || "[]").filter((x: unknown) => typeof x === "string");
+    const fetched = await Promise.all(ids.map((id: string) => getProposal(id)));
+    return fetched.filter(Boolean) as Proposal[];
+  }
+  if (!usingMock && !roundId) {
+    const roundIds = await getAllRoundIds();
+    const batches = await Promise.all(roundIds.map((id) => getProposals(id)));
+    return batches.flat();
+  }
   return roundId ? proposals.filter((p) => p.round_id === roundId) : proposals;
 }
 
@@ -177,43 +199,13 @@ export async function getProposal(id: string): Promise<Proposal | undefined> {
 
 export async function submitProposal(p: Proposal): Promise<{ txHash?: string }> {
   const client = await getClient();
-  let txHash: string | undefined;
   if (client) {
     const { proposal_id, round_id, proposal_hash, ...rest } = p;
     const payload = { ...rest, round_id };
-    const result = await client.writeContract({
-      address: CONTRACT_ADDRESS,
-      functionName: "submit_proposal",
-      args: [round_id, proposal_id, JSON.stringify(payload), proposal_hash],
-      value: 0n,
-    });
-    txHash = typeof result === "string" ? result : result?.hash ?? result?.transactionHash;
-    // Wait for finalization and verify execution actually succeeded; the SDK
-    // resolves writeContract as soon as the tx is accepted, so an assertion
-    // revert inside the contract would otherwise look like a successful submit.
-    if (txHash) {
-      try {
-        const receipt: any = await client.waitForTransactionReceipt({ hash: txHash, retries: 60, interval: 2000 });
-        const consensus = receipt?.consensus_data ?? receipt?.consensusData ?? {};
-        const txResult = receipt?.tx_data_decoded?.result ?? consensus?.leader_receipt?.[0]?.execution_result ?? receipt?.result ?? receipt?.executionResult;
-        const ok = String(txResult ?? "").toUpperCase() === "SUCCESS";
-        if (!ok) {
-          // Try to extract a human-readable error from the leader receipt.
-          const stderr =
-            consensus?.leader_receipt?.[0]?.error ??
-            consensus?.leader_receipt?.[0]?.stderr ??
-            receipt?.error ??
-            "Contract execution failed";
-          throw new Error(typeof stderr === "string" ? stderr : JSON.stringify(stderr));
-        }
-      } catch (e: any) {
-        // If we can't read the receipt or it failed, surface the error.
-        throw new Error(e?.message ?? `On-chain execution failed (tx ${txHash})`);
-      }
-    }
+    return writeAndWaitForFinality("submit_proposal", [round_id, proposal_id, JSON.stringify(payload), proposal_hash]);
   }
   proposals = [p, ...proposals];
-  return { txHash };
+  return {};
 }
 
 // ---------- Reviews / similarity / ranking ----------
@@ -221,40 +213,19 @@ export async function submitProposal(p: Proposal): Promise<{ txHash?: string }> 
 export async function triggerReview(roundId: string, proposalId: string): Promise<{ txHash?: string }> {
   const client = await getClient();
   if (!client) return {};
-  const result = await client.writeContract({
-    address: CONTRACT_ADDRESS,
-    functionName: "review_proposal",
-    args: [roundId, proposalId],
-    value: 0n,
-  });
-  const txHash = typeof result === "string" ? result : result?.hash ?? result?.transactionHash;
-  return { txHash };
+  return writeAndWaitForFinality("review_proposal", [roundId, proposalId]);
 }
 
 export async function triggerSimilarity(roundId: string, proposalId: string): Promise<{ txHash?: string }> {
   const client = await getClient();
   if (!client) return {};
-  const result = await client.writeContract({
-    address: CONTRACT_ADDRESS,
-    functionName: "compare_similarity",
-    args: [roundId, proposalId, "ROUND_ONLY"],
-    value: 0n,
-  });
-  const txHash = typeof result === "string" ? result : result?.hash ?? result?.transactionHash;
-  return { txHash };
+  return writeAndWaitForFinality("compare_similarity", [roundId, proposalId, "ROUND_ONLY"]);
 }
 
 export async function triggerRanking(roundId: string): Promise<{ txHash?: string }> {
   const client = await getClient();
   if (!client) return {};
-  const result = await client.writeContract({
-    address: CONTRACT_ADDRESS,
-    functionName: "rank_round",
-    args: [roundId],
-    value: 0n,
-  });
-  const txHash = typeof result === "string" ? result : result?.hash ?? result?.transactionHash;
-  return { txHash };
+  return writeAndWaitForFinality("rank_round", [roundId]);
 }
 
 export async function getReview(proposalId: string): Promise<ReviewResult | undefined> {
@@ -291,15 +262,10 @@ export async function getSimilarity(proposalId: string): Promise<SimilarityFindi
 
 export async function setDecision(d: CommitteeDecision): Promise<{ txHash?: string }> {
   const client = await getClient();
-  let txHash: string | undefined;
   if (client) {
-    const result = await client.writeContract({
-      address: CONTRACT_ADDRESS,
-      functionName: "set_final_decision",
-      args: [/* round_id */ "", d.proposal_id, JSON.stringify(d)],
-      value: 0n,
-    });
-    txHash = typeof result === "string" ? result : result?.hash ?? result?.transactionHash;
+    const proposal = await getProposal(d.proposal_id);
+    if (!proposal?.round_id) throw new Error("Cannot finalize without the proposal round_id.");
+    return writeAndWaitForFinality("set_final_decision", [proposal.round_id, d.proposal_id, JSON.stringify(d)]);
   }
   decisions[d.proposal_id] = d;
   proposals = proposals.map((p) =>
@@ -311,7 +277,7 @@ export async function setDecision(d: CommitteeDecision): Promise<{ txHash?: stri
         }
       : p
   );
-  return { txHash };
+  return {};
 }
 
 export async function getDecision(proposalId: string): Promise<CommitteeDecision | undefined> {
@@ -405,9 +371,32 @@ export async function getContractOwner(): Promise<string | null> {
   }
 }
 
-export function hashProposal(p: Pick<Proposal, "project_name" | "summary" | "solution" | "wallet">): string {
-  const s = `${p.project_name}|${p.summary}|${p.solution}|${p.wallet}`;
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return "0x" + (h >>> 0).toString(16).padStart(8, "0") + Date.now().toString(16);
+export async function hashProposal(p: Proposal): Promise<string> {
+  const immutable = {
+    round_id: p.round_id,
+    project_name: p.project_name,
+    team_name: p.team_name,
+    wallet: p.wallet,
+    contact: p.contact,
+    summary: p.summary,
+    problem: p.problem,
+    solution: p.solution,
+    why_ecosystem: p.why_ecosystem,
+    architecture: p.architecture,
+    milestones: p.milestones,
+    timeline: p.timeline,
+    budget: p.budget,
+    team_background: p.team_background,
+    prior_work: p.prior_work,
+    links: p.links,
+    disclosure: p.disclosure,
+    honesty_confirmed: p.honesty_confirmed,
+  };
+  const canonical = JSON.stringify(Object.keys(immutable).sort().reduce((acc, key) => {
+    (acc as any)[key] = (immutable as any)[key];
+    return acc;
+  }, {} as Record<string, unknown>));
+  const bytes = new TextEncoder().encode(canonical);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return "0x" + Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }

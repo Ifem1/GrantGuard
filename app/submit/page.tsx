@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getRounds, getRound, hashProposal, submitProposal, usingMock } from "@/lib/genlayer";
 import { mockRounds } from "@/lib/mockData";
-import type { GrantRound } from "@/lib/types";
+import type { GrantRound, Proposal } from "@/lib/types";
 
 export default function SubmitPageWrapper() {
   return (
@@ -93,13 +93,7 @@ function SubmitPage() {
     }
     setSubmitting(true);
     const id = "proposal_" + Math.random().toString(16).slice(2, 8);
-    const hash = hashProposal({
-      project_name: form.project_name,
-      summary: form.summary,
-      solution: form.solution,
-      wallet: form.wallet,
-    });
-    const newProposal = {
+    const newProposal: Proposal = {
       proposal_id: id,
       round_id: form.round_id,
       project_name: form.project_name,
@@ -119,10 +113,11 @@ function SubmitPage() {
       links: form.links,
       disclosure: form.disclosure,
       honesty_confirmed: true,
-      proposal_hash: hash,
+      proposal_hash: "",
       status: "SUBMITTED" as const,
       submitted_at: new Date().toISOString().slice(0, 10),
     };
+    newProposal.proposal_hash = await hashProposal(newProposal);
     try {
       const { txHash } = await submitProposal(newProposal);
       try {
