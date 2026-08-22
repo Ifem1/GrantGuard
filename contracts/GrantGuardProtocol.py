@@ -92,8 +92,13 @@ Return only valid JSON with round_id, ranked_proposals, and summary.
 """
 
 
-def _loads(raw: str):
-    return json.loads(raw)
+def _loads(raw):
+    if isinstance(raw, dict) or isinstance(raw, list):
+        return raw
+    obj = json.loads(raw)
+    if isinstance(obj, str):
+        return json.loads(obj)
+    return obj
 
 
 def _bounded_int(value, low: int = 0, high: int = 100) -> int:
@@ -283,7 +288,7 @@ class GrantGuardProtocol(gl.Contract):
     def create_round(self, round_id: str, round_json: str) -> None:
         assert round_id, "round_id required"
         assert round_id not in self.rounds, "round exists"
-        data = json.loads(round_json)
+        data = _loads(round_json)
         assert data.get("title") and data.get("funding_pool") is not None, "invalid round payload"
         assert data.get("status") in ("Draft", "Open", "Reviewing", "Finalised", "Archived"), "bad status"
         self._round_payload_from_data(data)
@@ -309,7 +314,7 @@ class GrantGuardProtocol(gl.Contract):
         round_data = self._round_payload(round_id)
         assert round_data.get("status") in ("Open", "Reviewing"), "round not accepting submissions"
         assert proposal_id and proposal_id not in self.proposals, "proposal id taken"
-        data = json.loads(proposal_json)
+        data = _loads(proposal_json)
         assert data.get("honesty_confirmed") is True, "honesty confirmation required"
         data["round_id"] = round_id
         expected_hash = canonical_proposal_commitment(round_id, data)
@@ -415,7 +420,7 @@ class GrantGuardProtocol(gl.Contract):
         round_data = self._round_payload(round_id)
         sender = str(gl.message.sender_address)
         assert sender == round_data.get("creator", "") or sender == str(self.owner), "only round creator or site owner"
-        decision = json.loads(decision_json)
+        decision = _loads(decision_json)
         assert decision.get("decision") in FINAL_DECISIONS, "bad decision"
         decision["round_id"] = round_id
         self.final_decisions[proposal_id] = json.dumps(decision)
