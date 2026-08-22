@@ -19,6 +19,7 @@ export default function NewRoundPage() {
     visibility: "public" as "public" | "private",
     weights: { ...DEFAULT_WEIGHTS },
     min_score: 50,
+    max_proposals: 25,
   });
   const [submitting, setSubmitting] = useState(false);
 
@@ -41,6 +42,7 @@ export default function NewRoundPage() {
         visibility: form.visibility,
         status: "Open",
         applicant_count: 0,
+        max_proposals: Number(form.max_proposals),
         creator: creator ?? undefined,
       });
       try {
@@ -143,6 +145,12 @@ export default function NewRoundPage() {
               label="Minimum feasibility score"
               value={String(form.min_score)}
               onChange={(v) => setForm({ ...form, min_score: Number(v) || 0 })}
+              type="number"
+            />
+            <Field
+              label="Maximum proposals"
+              value={String(form.max_proposals)}
+              onChange={(v) => setForm({ ...form, max_proposals: Math.max(1, Math.min(25, Number(v) || 25)) })}
               type="number"
             />
           </div>

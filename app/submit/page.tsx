@@ -4,7 +4,6 @@ import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getRounds, getRound, hashProposal, submitProposal, usingMock } from "@/lib/genlayer";
-import { mockRounds } from "@/lib/mockData";
 import type { GrantRound, Proposal } from "@/lib/types";
 
 export default function SubmitPageWrapper() {
@@ -19,7 +18,7 @@ function SubmitPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [rounds, setRounds] = useState<GrantRound[]>([]);
-  const openRounds = rounds.filter((r) => r.status === "Open" || r.status === "Reviewing");
+  const openRounds = rounds.filter((r) => r.status === "Open");
   const initialRound = searchParams.get("round") ?? "";
   const [form, setForm] = useState({
     round_id: initialRound,
@@ -49,7 +48,7 @@ function SubmitPage() {
       const visible = await getRounds();
       setRounds(visible);
       if (!form.round_id) {
-        const firstOpen = visible.find((r) => r.status === "Open") ?? visible.find((r) => r.status === "Reviewing");
+        const firstOpen = visible.find((r) => r.status === "Open");
         if (firstOpen) setForm((f) => ({ ...f, round_id: firstOpen.round_id }));
       }
     })();
@@ -71,13 +70,9 @@ function SubmitPage() {
       alert("Pick a grant round.");
       return;
     }
-    if (selected.status !== "Open" && selected.status !== "Reviewing") {
+    if (selected.status !== "Open") {
       alert(`This round is in "${selected.status}" status and is not accepting submissions.`);
       return;
-    }
-    if (selected.status === "Reviewing") {
-      const ok = confirm("This round is already under review. Late submissions are allowed but reviews are already in flight. Continue?");
-      if (!ok) { return; }
     }
     // Live-mode pre-flight: confirm the round actually exists on-chain before asking
     // the user to sign a transaction that would otherwise revert.
@@ -170,22 +165,17 @@ function SubmitPage() {
 
       <form onSubmit={submit} className="space-y-6">
         <Group title="Round">
-          <Select label="Grant round (Open or Reviewing)" value={form.round_id} onChange={(v) => set("round_id", v)}>
+          <Select label="Grant round (Open)" value={form.round_id} onChange={(v) => set("round_id", v)}>
             <option value="" disabled>Select a round…</option>
             {openRounds.map((r) => (
               <option key={r.round_id} value={r.round_id}>
-                {r.title} — {r.ecosystem}{r.status === "Reviewing" ? " · LATE" : ""}
+                {r.title} — {r.ecosystem}{r.max_proposals ? ` · cap ${r.max_proposals}` : ""}
               </option>
             ))}
           </Select>
           {rounds.length > 0 && openRounds.length < rounds.length && (
             <p className="text-xs text-muted font-mono mt-2">
-              {rounds.length - openRounds.length} round(s) hidden because they are Finalised or Archived.
-            </p>
-          )}
-          {openRounds.some((r) => r.status === "Reviewing") && (
-            <p className="text-xs text-gold font-mono mt-2">
-              Rounds tagged LATE are already under review — submissions are accepted but reviews are in flight.
+              {rounds.length - openRounds.length} round(s) hidden because they are not Open.
             </p>
           )}
         </Group>

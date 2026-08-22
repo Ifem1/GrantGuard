@@ -64,7 +64,7 @@ export default function AdminDashboard() {
       setProposals(ps);
       setReviews(await Promise.all(ps.map((p) => getReview(p.proposal_id))));
       setSims(await Promise.all(ps.map((p) => getSimilarity(p.proposal_id))));
-      setRanking(await getRoundRanking(active.round_id));
+      setRanking((await getRoundRanking(active.round_id)) ?? null);
     })();
   }, [active]);
 

@@ -33,7 +33,7 @@ export default function RoundDetail({ params }: { params: Promise<{ roundId: str
         const ps = await getProposals(roundId);
         setProposals(ps);
         setReviews(await Promise.all(ps.map((p) => getReview(p.proposal_id))));
-        setRanking(await getRoundRanking(roundId));
+        setRanking((await getRoundRanking(roundId)) ?? null);
       }
       setOwnerAddr(await getContractOwner());
     })();

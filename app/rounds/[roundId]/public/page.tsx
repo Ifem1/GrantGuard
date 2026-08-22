@@ -8,6 +8,21 @@ export default async function PublicRankings({ params }: { params: Promise<{ rou
   if (!round) notFound();
   const proposals = await getProposals(roundId);
   const ranking = await getRoundRanking(roundId);
+  if (!ranking) {
+    return (
+      <div className="max-w-5xl mx-auto px-6 py-12">
+        <Link href={`/rounds/${roundId}`} className="label-eyebrow hover:text-softwhite">← Round</Link>
+        <div className="mt-3 mb-10">
+          <div className="label-eyebrow mb-2">Public results</div>
+          <h1 className="font-display text-4xl text-softwhite">{round.title}</h1>
+          <p className="text-muted mt-2">{round.ecosystem} · pool ${round.funding_pool.toLocaleString()}</p>
+        </div>
+        <div className="panel p-8 text-sm text-muted font-mono">
+          No on-chain ranking is available for this round yet.
+        </div>
+      </div>
+    );
+  }
   const byId = Object.fromEntries(proposals.map((p) => [p.proposal_id, p]));
   const reviews = await Promise.all(ranking.ranked_proposals.map((r) => getReview(r.proposal_id)));
   const decisions = await Promise.all(ranking.ranked_proposals.map((r) => getDecision(r.proposal_id)));

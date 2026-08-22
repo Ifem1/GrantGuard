@@ -3,8 +3,8 @@
  *
  * Routes reads/writes through the genlayer-js SDK when a contract address is
  * configured via NEXT_PUBLIC_GRANTGUARD_CONTRACT. Falls back to mock data
- * (and localStorage for newly submitted proposals) so the demo flow works
- * end-to-end even without a deployment.
+ * only when no contract address is configured. Live mode reports chain
+ * failures honestly and never substitutes bundled mock data.
  */
 
 import type {
@@ -29,10 +29,10 @@ export const contractAddress = CONTRACT_ADDRESS;
 let _client: any = null;
 let _account: any = null;
 
-async function getClient(): Promise<any> {
+async function getClient(requireWallet = false): Promise<any> {
   if (typeof window === "undefined") return null;
   if (!CONTRACT_ADDRESS) return null;
-  if (_client) return _client;
+  if (_client && (!requireWallet || _account)) return _client;
 
   const sdk = await import("genlayer-js");
   const chains = await import("genlayer-js/chains");
@@ -46,7 +46,7 @@ async function getClient(): Promise<any> {
       if (accs?.[0]) _account = accs[0];
     } catch {}
   }
-  if (!_account) {
+  if (requireWallet && !_account) {
     throw new Error("Connect a wallet before sending live GenLayer transactions.");
   }
 
@@ -57,8 +57,38 @@ async function getClient(): Promise<any> {
   return _client;
 }
 
+export function getGenvmExecutionResult(receipt: any): { ok: boolean; detail: string } {
+  const consensus = receipt?.consensus_data ?? receipt?.consensusData ?? {};
+  const leaderReceipt = Array.isArray(consensus?.leader_receipt)
+    ? consensus.leader_receipt[0]
+    : consensus?.leader_receipt ?? receipt?.leader_receipt;
+  const executionResult = String(
+    leaderReceipt?.execution_result ??
+      leaderReceipt?.executionResult ??
+      receipt?.txExecutionResultName ??
+      receipt?.executionResultName ??
+      receipt?.execution_result ??
+      ""
+  ).toUpperCase();
+  const returnStatus = String(leaderReceipt?.result?.status ?? leaderReceipt?.result ?? "").toUpperCase();
+  const error =
+    leaderReceipt?.genvm_result?.stderr ??
+    leaderReceipt?.error ??
+    leaderReceipt?.result?.payload ??
+    receipt?.error ??
+    "";
+
+  if (executionResult === "SUCCESS" || returnStatus === "RETURN") {
+    return { ok: true, detail: executionResult || returnStatus };
+  }
+  if (executionResult === "ERROR" || executionResult === "FAILURE" || returnStatus === "CONTRACT_ERROR") {
+    return { ok: false, detail: typeof error === "string" && error ? error : executionResult || returnStatus };
+  }
+  return { ok: false, detail: "Transaction finalized, but GenVM execution success was not present in the receipt." };
+}
+
 async function writeAndWaitForFinality(functionName: string, args: unknown[]): Promise<{ txHash?: string }> {
-  const client = await getClient();
+  const client = await getClient(true);
   if (!client) return {};
   const types = await import("genlayer-js/types").catch(() => null as any);
   const result = await client.writeContract({
@@ -74,33 +104,17 @@ async function writeAndWaitForFinality(functionName: string, args: unknown[]): P
     status: types?.TransactionStatus?.FINALIZED ?? types?.TransactionStatus?.ACCEPTED,
     fullTransaction: false,
   });
-  const consensus = receipt?.consensus_data ?? receipt?.consensusData ?? {};
-  const txResult =
-    receipt?.tx_data_decoded?.result ??
-    consensus?.leader_receipt?.[0]?.execution_result ??
-    receipt?.result ??
-    receipt?.executionResult ??
-    receipt?.status;
-  const normalized = String(txResult ?? "").toUpperCase();
-  const ok = normalized === "SUCCESS" || normalized === "FINALIZED" || normalized === "ACCEPTED";
-  if (!ok) {
-    const stderr =
-      consensus?.leader_receipt?.[0]?.error ??
-      consensus?.leader_receipt?.[0]?.stderr ??
-      receipt?.error ??
-      `${functionName} execution failed`;
-    throw new Error(typeof stderr === "string" ? stderr : JSON.stringify(stderr));
-  }
+  const execution = getGenvmExecutionResult(receipt);
+  if (!execution.ok) throw new Error(`${functionName} failed after consensus finality: ${execution.detail}`);
   return { txHash };
 }
 
-async function safeRead<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
+async function safeRead<T>(fn: () => Promise<T>): Promise<T | undefined> {
   try {
-    const v = await fn();
-    return v as T;
+    return (await fn()) as T;
   } catch (e) {
-    console.warn("[genlayer] read failed, using fallback:", e);
-    return fallback;
+    console.warn("[genlayer] live read failed:", e);
+    return undefined;
   }
 }
 
@@ -132,10 +146,7 @@ export async function getRounds(): Promise<GrantRound[]> {
 export async function getRound(id: string): Promise<GrantRound | undefined> {
   const client = await getClient();
   if (client) {
-    const json = await safeRead<string>(
-      () => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_round", args: [id] }),
-      ""
-    );
+    const json = await safeRead<string>(() => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_round", args: [id] }));
     if (json && typeof json === "string") {
       try {
         const data = JSON.parse(json);
@@ -149,7 +160,7 @@ export async function getRound(id: string): Promise<GrantRound | undefined> {
 }
 
 export async function createRound(round: GrantRound): Promise<{ txHash?: string }> {
-  const client = await getClient();
+  const client = await getClient(true);
   if (client) {
     const { round_id, ...payload } = round;
     return writeAndWaitForFinality("create_round", [round_id, JSON.stringify(payload)]);
@@ -164,10 +175,8 @@ export async function getProposals(roundId?: string): Promise<Proposal[]> {
   if (!usingMock && roundId) {
     const client = await getClient();
     if (!client) return [];
-    const idsJson = await safeRead<string>(
-      () => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_proposals_by_round", args: [roundId] }),
-      "[]"
-    );
+    const idsJson = await safeRead<string>(() => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_proposals_by_round", args: [roundId] }));
+    if (idsJson === undefined) return [];
     const ids = JSON.parse(idsJson || "[]").filter((x: unknown) => typeof x === "string");
     const fetched = await Promise.all(ids.map((id: string) => getProposal(id)));
     return fetched.filter(Boolean) as Proposal[];
@@ -183,10 +192,7 @@ export async function getProposals(roundId?: string): Promise<Proposal[]> {
 export async function getProposal(id: string): Promise<Proposal | undefined> {
   const client = await getClient();
   if (client) {
-    const json = await safeRead<string>(
-      () => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_proposal", args: [id] }),
-      ""
-    );
+    const json = await safeRead<string>(() => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_proposal", args: [id] }));
     if (json && typeof json === "string") {
       try {
         const data = JSON.parse(json);
@@ -194,11 +200,11 @@ export async function getProposal(id: string): Promise<Proposal | undefined> {
       } catch {}
     }
   }
-  return proposals.find((p) => p.proposal_id === id);
+  return usingMock ? proposals.find((p) => p.proposal_id === id) : undefined;
 }
 
 export async function submitProposal(p: Proposal): Promise<{ txHash?: string }> {
-  const client = await getClient();
+  const client = await getClient(true);
   if (client) {
     const { proposal_id, round_id, proposal_hash, ...rest } = p;
     const payload = { ...rest, round_id };
@@ -231,37 +237,31 @@ export async function triggerRanking(roundId: string): Promise<{ txHash?: string
 export async function getReview(proposalId: string): Promise<ReviewResult | undefined> {
   const client = await getClient();
   if (client) {
-    const json = await safeRead<string>(
-      () => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_review", args: [proposalId] }),
-      ""
-    );
+    const json = await safeRead<string>(() => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_review", args: [proposalId] }));
     if (json && typeof json === "string") {
       try {
         return { ...JSON.parse(json), proposal_id: proposalId } as ReviewResult;
       } catch {}
     }
   }
-  return reviews[proposalId];
+  return usingMock ? reviews[proposalId] : undefined;
 }
 
 export async function getSimilarity(proposalId: string): Promise<SimilarityFinding | undefined> {
   const client = await getClient();
   if (client) {
-    const json = await safeRead<string>(
-      () => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_similarity", args: [proposalId] }),
-      ""
-    );
+    const json = await safeRead<string>(() => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_similarity", args: [proposalId] }));
     if (json && typeof json === "string") {
       try {
         return JSON.parse(json) as SimilarityFinding;
       } catch {}
     }
   }
-  return similarities[proposalId];
+  return usingMock ? similarities[proposalId] : undefined;
 }
 
 export async function setDecision(d: CommitteeDecision): Promise<{ txHash?: string }> {
-  const client = await getClient();
+  const client = await getClient(true);
   if (client) {
     const proposal = await getProposal(d.proposal_id);
     if (!proposal?.round_id) throw new Error("Cannot finalize without the proposal round_id.");
@@ -283,33 +283,28 @@ export async function setDecision(d: CommitteeDecision): Promise<{ txHash?: stri
 export async function getDecision(proposalId: string): Promise<CommitteeDecision | undefined> {
   const client = await getClient();
   if (client) {
-    const json = await safeRead<string>(
-      () => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_final_decision", args: [proposalId] }),
-      ""
-    );
+    const json = await safeRead<string>(() => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_final_decision", args: [proposalId] }));
     if (json && typeof json === "string") {
       try {
         return JSON.parse(json) as CommitteeDecision;
       } catch {}
     }
   }
-  return decisions[proposalId];
+  return usingMock ? decisions[proposalId] : undefined;
 }
 
-export async function getRoundRanking(roundId: string): Promise<Ranking> {
+export async function getRoundRanking(roundId: string): Promise<Ranking | undefined> {
   const client = await getClient();
   if (client) {
-    const json = await safeRead<string>(
-      () => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_round_rankings", args: [roundId] }),
-      ""
-    );
+    const json = await safeRead<string>(() => client.readContract({ address: CONTRACT_ADDRESS, functionName: "get_round_rankings", args: [roundId] }));
     if (json && typeof json === "string") {
       try {
         return JSON.parse(json) as Ranking;
       } catch {}
     }
   }
-  // Derive a ranking locally from whatever reviews we have.
+  if (!usingMock) return undefined;
+  // Derive a mock ranking locally from bundled mock reviews.
   const ps = proposals.filter((p) => p.round_id === roundId);
   const ranked = ps
     .map((p) => {

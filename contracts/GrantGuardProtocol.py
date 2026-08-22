@@ -41,6 +41,14 @@ DECISIONS = [
 ]
 FINAL_DECISIONS = ["ACCEPTED", "REJECTED", "WAITLISTED", "REVISION_REQUIRED", "DISQUALIFIED"]
 SIMILARITY_ACTIONS = ["NO_ACTION", "MANUAL_REVIEW", "REQUEST_CLARIFICATION", "POSSIBLE_DISQUALIFICATION"]
+ROUND_STATUSES = ["Draft", "Open", "Reviewing", "Finalised", "Archived"]
+ROUND_TRANSITIONS = {
+    "Draft": ["Open", "Archived"],
+    "Open": ["Reviewing", "Archived"],
+    "Reviewing": ["Finalised", "Archived"],
+    "Finalised": ["Archived"],
+    "Archived": [],
+}
 MAX_SIMILARITY_COMPARISONS = 8
 MAX_RANKING_ITEMS = 25
 OVERALL_TOLERANCE = 8
@@ -118,7 +126,7 @@ def _decision_index(decision: str) -> int:
 
 
 def _canonical_json(obj) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def _text(value) -> str:
@@ -243,6 +251,23 @@ def normalize_similarity(obj: dict) -> dict:
     obj["matched_sections"] = [str(x)[:240] for x in obj.get("matched_sections", [])[:8]]
     obj["reasoning_summary"] = str(obj.get("reasoning_summary", ""))[:1200]
     return obj
+
+
+def aggregate_similarity(results: list[dict]) -> dict:
+    assert len(results) > 0, "no similarity results"
+    ordered = sorted(
+        [normalize_similarity(dict(item)) for item in results],
+        key=lambda x: (-_risk_index(x["similarity_level"]), -int(x["similarity_score"]), str(x.get("reasoning_summary", ""))),
+    )
+    best = ordered[0]
+    if len(results) > 1:
+        best["reasoning_summary"] = (
+            best.get("reasoning_summary", "")[:900]
+            + " Batching covered "
+            + str(len(results))
+            + " deterministic same-round corpus batch(es)."
+        )[:1200]
+    return best
 
 
 def similarity_failure(reason: str) -> dict:
@@ -387,6 +412,11 @@ class GrantGuardProtocol(gl.Contract):
         self.round_count = u256(int(self.round_count) + 1)
 
     def _round_payload_from_data(self, data: dict) -> None:
+        assert data.get("status") in ROUND_STATUSES, "bad status"
+        max_proposals = data.get("max_proposals", MAX_RANKING_ITEMS)
+        assert isinstance(max_proposals, int), "max_proposals must be int"
+        assert 1 <= max_proposals <= MAX_RANKING_ITEMS, "bad max_proposals"
+        data["max_proposals"] = max_proposals
         weights = data.get("criteria_weights", {})
         total = 0
         for key in WEIGHT_KEYS:
@@ -396,10 +426,26 @@ class GrantGuardProtocol(gl.Contract):
             total += weight
         assert total > 0, "criteria weights required"
 
+    def _authorize_round_manager(self, round_data: dict) -> None:
+        sender = str(gl.message.sender_address)
+        assert sender == round_data.get("creator", "") or sender == str(self.owner), "only round creator or site owner"
+
+    @gl.public.write
+    def set_round_status(self, round_id: str, new_status: str) -> None:
+        round_data = self._round_payload(round_id)
+        self._authorize_round_manager(round_data)
+        assert new_status in ROUND_STATUSES, "bad status"
+        current = round_data.get("status")
+        assert new_status in ROUND_TRANSITIONS[current], "invalid round transition"
+        round_data["status"] = new_status
+        self.rounds[round_id] = json.dumps(round_data)
+
     @gl.public.write
     def submit_proposal(self, round_id: str, proposal_id: str, proposal_json: str, proposal_hash: str) -> None:
         round_data = self._round_payload(round_id)
-        assert round_data.get("status") in ("Open", "Reviewing"), "round not accepting submissions"
+        assert round_data.get("status") == "Open", "round not accepting submissions"
+        ids = json.loads(self.round_proposals.get(round_id) or "[]")
+        assert len(ids) < int(round_data.get("max_proposals", MAX_RANKING_ITEMS)), "round proposal cap reached"
         assert proposal_id and proposal_id not in self.proposals, "proposal id taken"
         data = _loads(proposal_json)
         assert data.get("honesty_confirmed") is True, "honesty confirmation required"
@@ -415,6 +461,7 @@ class GrantGuardProtocol(gl.Contract):
     @gl.public.write
     def review_proposal(self, round_id: str, proposal_id: str) -> None:
         round_data = self._round_payload(round_id)
+        assert round_data.get("status") == "Reviewing", "round not reviewing"
         proposal_data = self._proposal_payload(round_id, proposal_id)
         assert proposal_id not in self.reviews, "proposal already reviewed"
 
@@ -431,19 +478,20 @@ class GrantGuardProtocol(gl.Contract):
 
         review = gl.vm.run_nondet_unsafe(leader, validator)
         self.reviews[proposal_id] = json.dumps(review)
-        proposal_data["status"] = "MANUAL_REVIEW_REQUIRED" if review["recommended_decision"] in ("FLAG_FOR_MANUAL_REVIEW", "INSUFFICIENT_INFORMATION", "CONSENSUS_NOT_REACHED") else "AI_REVIEWED"
+        proposal_data["status"] = "MANUAL_REVIEW_REQUIRED" if review["recommended_decision"] in ("FLAG_FOR_MANUAL_REVIEW", "INSUFFICIENT_INFORMATION", "CONSENSUS_NOT_REACHED", "MANUAL_REVIEW_REQUIRED") else "AI_REVIEWED"
         self.proposals[proposal_id] = json.dumps(proposal_data)
         self.review_count = u256(int(self.review_count) + 1)
 
     @gl.public.write
     def compare_similarity(self, round_id: str, proposal_id: str, comparison_scope: str) -> None:
         assert comparison_scope == "ROUND_ONLY", "only bounded round comparison supported"
+        round_data = self._round_payload(round_id)
+        assert round_data.get("status") == "Reviewing", "round not reviewing"
         target = self._proposal_payload(round_id, proposal_id)
         ids = json.loads(self.round_proposals.get(round_id) or "[]")
-        other_ids = sorted([pid for pid in ids if pid != proposal_id])[:MAX_SIMILARITY_COMPARISONS]
-        corpus = [json.loads(self.proposals[pid]) for pid in other_ids if pid in self.proposals]
+        other_ids = sorted([pid for pid in ids if pid != proposal_id])
 
-        if len(corpus) == 0:
+        if len(other_ids) == 0:
             self.similarities[proposal_id] = json.dumps({
                 "similarity_level": "LOW",
                 "similarity_score": 0,
@@ -453,32 +501,45 @@ class GrantGuardProtocol(gl.Contract):
             })
             return
 
-        def leader():
-            raw = gl.nondet.exec_prompt(SIMILARITY_PROMPT + "\n=== TARGET ===\n" + json.dumps(target) + "\n=== CORPUS ===\n" + json.dumps(corpus))
-            return parse_similarity_result(raw)
+        batch_results = []
+        for start in range(0, len(other_ids), MAX_SIMILARITY_COMPARISONS):
+            batch_ids = other_ids[start:start + MAX_SIMILARITY_COMPARISONS]
+            corpus = [json.loads(self.proposals[pid]) for pid in batch_ids if pid in self.proposals]
 
-        def validator(leader_result) -> bool:
-            if not isinstance(leader_result, gl.vm.Return):
-                return False
-            raw = gl.nondet.exec_prompt(SIMILARITY_PROMPT + "\n=== TARGET ===\n" + json.dumps(target) + "\n=== CORPUS ===\n" + json.dumps(corpus))
-            return similarities_agree(leader_result.calldata, parse_similarity_result(raw))
+            def leader():
+                raw = gl.nondet.exec_prompt(SIMILARITY_PROMPT + "\n=== TARGET ===\n" + json.dumps(target) + "\n=== CORPUS ===\n" + json.dumps(corpus))
+                return parse_similarity_result(raw)
 
-        self.similarities[proposal_id] = json.dumps(gl.vm.run_nondet_unsafe(leader, validator))
+            def validator(leader_result) -> bool:
+                if not isinstance(leader_result, gl.vm.Return):
+                    return False
+                raw = gl.nondet.exec_prompt(SIMILARITY_PROMPT + "\n=== TARGET ===\n" + json.dumps(target) + "\n=== CORPUS ===\n" + json.dumps(corpus))
+                return similarities_agree(leader_result.calldata, parse_similarity_result(raw))
+
+            result = gl.vm.run_nondet_unsafe(leader, validator)
+            result["compared_against"] = batch_ids
+            batch_results.append(result)
+
+        self.similarities[proposal_id] = json.dumps(aggregate_similarity(batch_results))
 
     @gl.public.write
     def rank_round(self, round_id: str) -> None:
-        self._round_payload(round_id)
+        round_data = self._round_payload(round_id)
+        assert round_data.get("status") == "Reviewing", "round not reviewing"
         ids = json.loads(self.round_proposals.get(round_id) or "[]")
         assert len(ids) <= MAX_RANKING_ITEMS, "round too large for ranking"
         items = []
         for pid in sorted(ids):
             assert pid in self.reviews, "missing proposal review"
+            assert pid in self.similarities, "missing proposal similarity"
             review = json.loads(self.reviews[pid])
+            similarity = json.loads(self.similarities[pid])
             items.append({
                 "proposal_id": pid,
                 "overall_score": review["overall_score"],
-                "plagiarism_risk": review["plagiarism_risk"],
-                "similarity_risk": review["similarity_risk"],
+                "similarity_level": similarity["similarity_level"],
+                "similarity_score": similarity["similarity_score"],
+                "similarity_action": similarity["recommended_action"],
                 "delivery_risk": review["delivery_risk"],
                 "recommended_decision": review["recommended_decision"],
                 "summary": review.get("summary", ""),
@@ -502,8 +563,8 @@ class GrantGuardProtocol(gl.Contract):
     def set_final_decision(self, round_id: str, proposal_id: str, decision_json: str) -> None:
         prop = self._proposal_payload(round_id, proposal_id)
         round_data = self._round_payload(round_id)
-        sender = str(gl.message.sender_address)
-        assert sender == round_data.get("creator", "") or sender == str(self.owner), "only round creator or site owner"
+        assert round_data.get("status") in ("Reviewing", "Finalised"), "round not finalizing"
+        self._authorize_round_manager(round_data)
         decision = _loads(decision_json)
         assert decision.get("decision") in FINAL_DECISIONS, "bad decision"
         decision["round_id"] = round_id

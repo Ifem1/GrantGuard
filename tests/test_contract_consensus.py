@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import pathlib
+import subprocess
 import sys
 import types
 import unittest
@@ -15,7 +17,8 @@ def load_contract_module():
         Contract=object,
         public=types.SimpleNamespace(write=lambda f: f, view=lambda f: f),
         message=types.SimpleNamespace(sender_address="0xowner"),
-        vm=types.SimpleNamespace(Return=type("Return", (), {})),
+        vm=types.SimpleNamespace(Return=type("Return", (), {}), run_nondet_unsafe=lambda leader, validator: leader()),
+        nondet=types.SimpleNamespace(exec_prompt=lambda prompt: "{}"),
     )
     fake.Address = str
     fake.u256 = int
@@ -32,6 +35,10 @@ gg = load_contract_module()
 
 
 ROUND = {
+    "title": "Round",
+    "funding_pool": 100000,
+    "status": "Open",
+    "max_proposals": 25,
     "criteria_weights": {
         "originality": 20,
         "technical_feasibility": 20,
@@ -41,6 +48,44 @@ ROUND = {
         "budget_reasonableness": 10,
     }
 }
+
+
+def make_contract(sender="0xowner"):
+    gg.gl.message.sender_address = sender
+    c = gg.GrantGuardProtocol()
+    c.rounds = {}
+    c.round_ids_json = "[]"
+    c.proposals = {}
+    c.round_proposals = {}
+    c.reviews = {}
+    c.similarities = {}
+    c.rankings = {}
+    c.final_decisions = {}
+    return c
+
+
+def proposal(**overrides):
+    base = {
+        "project_name": "GrantGuard",
+        "team_name": "Team",
+        "wallet": "0xabc",
+        "contact": "team@example.com",
+        "summary": "Summary",
+        "problem": "Problem",
+        "solution": "Solution",
+        "why_ecosystem": "Why",
+        "architecture": "Arch",
+        "milestones": "M1",
+        "timeline": "4 weeks",
+        "budget": 1000,
+        "team_background": "Builders",
+        "prior_work": "Prior",
+        "links": "https://example.com",
+        "disclosure": "None",
+        "honesty_confirmed": True,
+    }
+    base.update(overrides)
+    return base
 
 
 def review(**overrides):
@@ -136,6 +181,126 @@ class ConsensusToleranceTests(unittest.TestCase):
         changed = gg.canonical_proposal_commitment("round", {**proposal, "solution": "Different"})
         self.assertEqual(first, second)
         self.assertNotEqual(first, changed)
+
+    def test_unicode_commitment_matches_javascript_vectors(self):
+        vectors = [
+            "GrantGuard",
+            "Caf\u00e9",
+            "\u4e2d\u6587",
+            "\U0001f680",
+            "quotes ' \" \n backslash \\",
+        ]
+        js = r"""
+const crypto = require('crypto');
+const value = process.argv[1];
+const obj = {
+  architecture: value, budget: 1000, contact: value, disclosure: value,
+  honesty_confirmed: true, links: value, milestones: value, prior_work: value,
+  problem: value, project_name: value, round_id: 'round', solution: value,
+  summary: value, team_background: value, team_name: value, timeline: value,
+  wallet: value, why_ecosystem: value
+};
+const ordered = Object.keys(obj).sort().reduce((acc, key) => { acc[key] = obj[key]; return acc; }, {});
+process.stdout.write('0x' + crypto.createHash('sha256').update(JSON.stringify(ordered), 'utf8').digest('hex'));
+"""
+        for value in vectors:
+            p = proposal(
+                project_name=value, team_name=value, wallet=value, contact=value,
+                summary=value, problem=value, solution=value, why_ecosystem=value,
+                architecture=value, milestones=value, timeline=value,
+                team_background=value, prior_work=value, links=value, disclosure=value,
+            )
+            py_hash = gg.canonical_proposal_commitment("round", p)
+            js_hash = subprocess.check_output(["node", "-e", js, value], cwd=ROOT, text=True)
+            self.assertEqual(py_hash, js_hash)
+
+    def test_round_lifecycle_and_authorization(self):
+        c = make_contract("0xcreator")
+        c.create_round("r1", json.dumps(ROUND))
+        self.assertIn("r1", c.rounds)
+        with self.assertRaises(AssertionError):
+            c.set_round_status("r1", "Finalised")
+        gg.gl.message.sender_address = "0xother"
+        with self.assertRaises(AssertionError):
+            c.set_round_status("r1", "Reviewing")
+        gg.gl.message.sender_address = "0xcreator"
+        c.set_round_status("r1", "Reviewing")
+        c.set_round_status("r1", "Finalised")
+        c.set_round_status("r1", "Archived")
+        with self.assertRaises(AssertionError):
+            c.set_round_status("r1", "Open")
+
+    def test_submission_only_open_and_cap_boundary(self):
+        c = make_contract("0xcreator")
+        round_data = {**ROUND, "max_proposals": 2}
+        c.create_round("r1", json.dumps(round_data))
+        for pid in ("p1", "p2"):
+            p = proposal(project_name=pid)
+            h = gg.canonical_proposal_commitment("r1", p)
+            c.submit_proposal("r1", pid, json.dumps(p), h)
+        with self.assertRaises(AssertionError):
+            p = proposal(project_name="p3")
+            c.submit_proposal("r1", "p3", json.dumps(p), gg.canonical_proposal_commitment("r1", p))
+        c.set_round_status("r1", "Reviewing")
+        with self.assertRaises(AssertionError):
+            p = proposal(project_name="late")
+            c.submit_proposal("r1", "late", json.dumps(p), gg.canonical_proposal_commitment("r1", p))
+
+    def test_wrong_commitment_rejected(self):
+        c = make_contract("0xcreator")
+        c.create_round("r1", json.dumps(ROUND))
+        with self.assertRaises(AssertionError):
+            c.submit_proposal("r1", "p1", json.dumps(proposal()), "0x" + "00" * 32)
+
+    def test_manual_review_required_status_is_not_ai_reviewed(self):
+        c = make_contract("0xcreator")
+        c.create_round("r1", json.dumps(ROUND))
+        p = proposal()
+        c.submit_proposal("r1", "p1", json.dumps(p), gg.canonical_proposal_commitment("r1", p))
+        c.set_round_status("r1", "Reviewing")
+        old_runner = gg.gl.vm.run_nondet_unsafe
+        gg.gl.vm.run_nondet_unsafe = lambda leader, validator: gg.manual_review_result("bad json")
+        try:
+            c.review_proposal("r1", "p1")
+        finally:
+            gg.gl.vm.run_nondet_unsafe = old_runner
+        self.assertEqual(json.loads(c.proposals["p1"])["status"], "MANUAL_REVIEW_REQUIRED")
+
+    def test_ranking_requires_authoritative_similarity(self):
+        c = make_contract("0xcreator")
+        c.create_round("r1", json.dumps(ROUND))
+        p = proposal()
+        c.submit_proposal("r1", "p1", json.dumps(p), gg.canonical_proposal_commitment("r1", p))
+        c.set_round_status("r1", "Reviewing")
+        c.reviews["p1"] = json.dumps(gg.normalize_review(ROUND, review()))
+        with self.assertRaises(AssertionError):
+            c.rank_round("r1")
+        c.similarities["p1"] = json.dumps({
+            "similarity_level": "LOW",
+            "similarity_score": 0,
+            "matched_sections": [],
+            "reasoning_summary": "single proposal",
+            "recommended_action": "NO_ACTION",
+        })
+        c.rank_round("r1")
+        self.assertIn("p1", c.rankings["r1"])
+
+    def test_similarity_batch_aggregation_selects_highest_material_result(self):
+        low = {
+            "similarity_level": "LOW",
+            "similarity_score": 5,
+            "matched_sections": [],
+            "reasoning_summary": "low",
+            "recommended_action": "NO_ACTION",
+        }
+        critical = {
+            "similarity_level": "CRITICAL",
+            "similarity_score": 98,
+            "matched_sections": ["solution"],
+            "reasoning_summary": "duplicate",
+            "recommended_action": "POSSIBLE_DISQUALIFICATION",
+        }
+        self.assertEqual(gg.aggregate_similarity([low, critical])["similarity_score"], 98)
 
 
 if __name__ == "__main__":

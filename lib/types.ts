@@ -19,7 +19,10 @@ export type RecommendedDecision =
   | "REQUEST_REVISION"
   | "WAITLIST"
   | "REJECT"
-  | "FLAG_FOR_MANUAL_REVIEW";
+  | "FLAG_FOR_MANUAL_REVIEW"
+  | "INSUFFICIENT_INFORMATION"
+  | "CONSENSUS_NOT_REACHED"
+  | "MANUAL_REVIEW_REQUIRED";
 
 export type FinalDecision = "ACCEPTED" | "REJECTED" | "WAITLISTED" | "REVISION_REQUIRED" | "DISQUALIFIED";
 
@@ -44,6 +47,7 @@ export interface GrantRound {
   visibility: "public" | "private";
   status: RoundStatus;
   applicant_count: number;
+  max_proposals?: number;
   creator?: string;
 }
 
