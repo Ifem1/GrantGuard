@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -17,6 +18,7 @@ import time
 CONTRACT = os.getenv("NEXT_PUBLIC_GRANTGUARD_CONTRACT", "").strip()
 USE_CLI = os.getenv("GENLAYER_USE_CLI_ACCOUNT", "").strip() == "1"
 TX_RE = re.compile(r"Write Transaction Hash:\s*(0x[a-fA-F0-9]{64})")
+GENLAYER = shutil.which("genlayer") or shutil.which("genlayer.cmd") or "genlayer"
 
 
 def canonical_hash(round_id: str, proposal: dict) -> str:
@@ -54,14 +56,14 @@ def run(args: list[str]) -> tuple[str, str | None]:
 
 
 def write(method: str, args: list[str]) -> str:
-    _, tx = run(["genlayer", "write", CONTRACT, method, "--args", *args])
+    _, tx = run([GENLAYER, "write", CONTRACT, method, "--args", *args])
     if not tx:
         raise RuntimeError("No transaction hash found for " + method)
     return tx
 
 
 def call(method: str, args: list[str]) -> str:
-    out, _ = run(["genlayer", "call", CONTRACT, method, "--args", *args])
+    out, _ = run([GENLAYER, "call", CONTRACT, method, "--args", *args])
     return out
 
 
