@@ -187,6 +187,35 @@ def normalize_review(round_data: dict, obj: dict) -> dict:
     return obj
 
 
+def manual_review_result(reason: str) -> dict:
+    return {
+        "originality_score": 0,
+        "technical_feasibility_score": 0,
+        "ecosystem_alignment_score": 0,
+        "team_capability_score": 0,
+        "impact_score": 0,
+        "budget_reasonableness_score": 0,
+        "plagiarism_risk": "CRITICAL",
+        "similarity_risk": "CRITICAL",
+        "delivery_risk": "CRITICAL",
+        "strengths": [],
+        "weaknesses": ["Consensus could not parse a complete independent review."],
+        "red_flags": [reason[:240]],
+        "reviewer_questions": ["Manual committee review is required before any funding decision."],
+        "recommended_decision": "MANUAL_REVIEW_REQUIRED",
+        "summary": "GenLayer review failed conservatively and requires manual review.",
+        "ranking_rationale": "Excluded from confident ranking because review consensus returned a failure state.",
+        "overall_score": 0,
+    }
+
+
+def parse_review_result(round_data: dict, raw: str) -> dict:
+    try:
+        return normalize_review(round_data, json.loads(raw.strip()))
+    except Exception as exc:
+        return manual_review_result("Malformed review output: " + str(exc))
+
+
 def reviews_agree(round_data: dict, leader: dict, validator: dict) -> bool:
     leader = normalize_review(round_data, leader)
     validator = normalize_review(round_data, validator)
@@ -214,6 +243,23 @@ def normalize_similarity(obj: dict) -> dict:
     obj["matched_sections"] = [str(x)[:240] for x in obj.get("matched_sections", [])[:8]]
     obj["reasoning_summary"] = str(obj.get("reasoning_summary", ""))[:1200]
     return obj
+
+
+def similarity_failure(reason: str) -> dict:
+    return {
+        "similarity_level": "CRITICAL",
+        "similarity_score": 100,
+        "matched_sections": [],
+        "reasoning_summary": "Similarity consensus failed conservatively: " + reason[:300],
+        "recommended_action": "MANUAL_REVIEW",
+    }
+
+
+def parse_similarity_result(raw: str) -> dict:
+    try:
+        return normalize_similarity(json.loads(raw.strip()))
+    except Exception as exc:
+        return similarity_failure("Malformed similarity output: " + str(exc))
 
 
 def similarities_agree(leader: dict, validator: dict) -> bool:
@@ -252,6 +298,35 @@ def rankings_agree(items: list[dict], leader: dict, validator: dict) -> bool:
         if abs(int(moved["overall_score"]) - int(anchor["overall_score"])) > CLOSE_SCORE_DELTA:
             return False
     return True
+
+
+def deterministic_ranking(round_id: str, items: list[dict], reason: str) -> dict:
+    ordered = sorted(items, key=lambda x: (-int(x["overall_score"]), str(x["proposal_id"])))
+    ranked = []
+    for i, item in enumerate(ordered):
+        ranked.append({
+            "proposal_id": item["proposal_id"],
+            "rank": i + 1,
+            "overall_score": item["overall_score"],
+            "risk_adjusted_score": item["overall_score"],
+            "recommended_decision": item["recommended_decision"],
+            "rationale": "Deterministic fallback ranking after malformed ranking output.",
+        })
+    return {
+        "round_id": round_id,
+        "ranked_proposals": ranked,
+        "summary": "Ranking consensus failed conservatively and used deterministic score order: " + reason[:300],
+    }
+
+
+def parse_ranking_result(round_id: str, items: list[dict], raw: str) -> dict:
+    try:
+        obj = json.loads(raw.strip())
+        assert obj.get("round_id") == round_id, "ranking round mismatch"
+        ranking_signature(obj)
+        return obj
+    except Exception as exc:
+        return deterministic_ranking(round_id, items, "Malformed ranking output: " + str(exc))
 
 
 class GrantGuardProtocol(gl.Contract):
@@ -345,13 +420,13 @@ class GrantGuardProtocol(gl.Contract):
 
         def leader():
             raw = gl.nondet.exec_prompt(REVIEW_PROMPT + "\n=== ROUND ===\n" + json.dumps(round_data) + "\n=== PROPOSAL ===\n" + json.dumps(proposal_data))
-            return normalize_review(round_data, json.loads(raw.strip()))
+            return parse_review_result(round_data, raw)
 
         def validator(leader_result) -> bool:
             if not isinstance(leader_result, gl.vm.Return):
                 return False
             raw = gl.nondet.exec_prompt(REVIEW_PROMPT + "\n=== ROUND ===\n" + json.dumps(round_data) + "\n=== PROPOSAL ===\n" + json.dumps(proposal_data))
-            mine = json.loads(raw.strip())
+            mine = parse_review_result(round_data, raw)
             return reviews_agree(round_data, leader_result.calldata, mine)
 
         review = gl.vm.run_nondet_unsafe(leader, validator)
@@ -380,13 +455,13 @@ class GrantGuardProtocol(gl.Contract):
 
         def leader():
             raw = gl.nondet.exec_prompt(SIMILARITY_PROMPT + "\n=== TARGET ===\n" + json.dumps(target) + "\n=== CORPUS ===\n" + json.dumps(corpus))
-            return normalize_similarity(json.loads(raw.strip()))
+            return parse_similarity_result(raw)
 
         def validator(leader_result) -> bool:
             if not isinstance(leader_result, gl.vm.Return):
                 return False
             raw = gl.nondet.exec_prompt(SIMILARITY_PROMPT + "\n=== TARGET ===\n" + json.dumps(target) + "\n=== CORPUS ===\n" + json.dumps(corpus))
-            return similarities_agree(leader_result.calldata, json.loads(raw.strip()))
+            return similarities_agree(leader_result.calldata, parse_similarity_result(raw))
 
         self.similarities[proposal_id] = json.dumps(gl.vm.run_nondet_unsafe(leader, validator))
 
@@ -412,16 +487,13 @@ class GrantGuardProtocol(gl.Contract):
 
         def leader():
             raw = gl.nondet.exec_prompt(RANKING_PROMPT + "\n=== INPUT ===\n" + json.dumps({"round_id": round_id, "items": items}))
-            obj = json.loads(raw.strip())
-            assert obj.get("round_id") == round_id, "ranking round mismatch"
-            ranking_signature(obj)
-            return obj
+            return parse_ranking_result(round_id, items, raw)
 
         def validator(leader_result) -> bool:
             if not isinstance(leader_result, gl.vm.Return):
                 return False
             raw = gl.nondet.exec_prompt(RANKING_PROMPT + "\n=== INPUT ===\n" + json.dumps({"round_id": round_id, "items": items}))
-            mine = json.loads(raw.strip())
+            mine = parse_ranking_result(round_id, items, raw)
             return rankings_agree(items, leader_result.calldata, mine)
 
         self.rankings[round_id] = json.dumps(gl.vm.run_nondet_unsafe(leader, validator))
